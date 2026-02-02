@@ -1,0 +1,8 @@
+{
+  "name": "Inspectra",
+  "description": "A professional construction inspection and site-walk reporting tool with photo annotations and floor plan pinning.",
+  "requestFramePermissions": [
+    "camera",
+    "geolocation"
+  ]
+}
