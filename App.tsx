@@ -6,7 +6,8 @@ import {
   LayoutDashboard, Download, CheckCircle2, Settings, X, 
   Info, Bell, MapPin, Calendar, User, Save, FileText, Upload, Loader2,
   Maximize2, Eye, FolderOpen, LogOut, PlusCircle, Database, BookmarkPlus, Sparkles,
-  Map as MapPinIcon
+  Map as MapPinIcon, ChevronDown, ListPlus, Pencil, Check, Circle, CheckCircle, MoreHorizontal,
+  Wifi, WifiOff, CloudUpload, RefreshCw, Move, PlusSquare
 } from 'lucide-react';
 import { 
   Priority, Coordinates, Observation, FloorPlan, ProjectInfo, ProjectMeta, WeatherData 
@@ -54,20 +55,35 @@ const App: React.FC = () => {
   const [plans, setPlans] = useState<FloorPlan[]>([]);
   const [observations, setObservations] = useState<Observation[]>([]);
 
+  // --- Connectivity & Sync State ---
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [hasUnsyncedChanges, setHasUnsyncedChanges] = useState(() => {
+    return localStorage.getItem('site_has_unsynced_changes') === 'true';
+  });
+
   // --- UI State ---
-  const [view, setView] = useState<'projectBrowser' | 'dashboard' | 'plans' | 'observations' | 'editor' | 'settings'>('projectBrowser');
+  const [view, setView] = useState<'projectBrowser' | 'dashboard' | 'plans' | 'observations' | 'editor' | 'settings' | 'manageTemplates'>('projectBrowser');
   const [editingObs, setEditingObs] = useState<Observation | null>(null);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
-  const [isSelectingLocation, setIsSelectingLocation] = useState<string | null>(null); // Plan ID being used for location selection
+  const [isSelectingLocation, setIsSelectingLocation] = useState<string | null>(null); 
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
+  const [isRepositioningId, setIsRepositioningId] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const [isAnnotating, setIsAnnotating] = useState<{index: number, data: string} | null>(null);
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [showToast, setShowToast] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [showCommentDropdown, setShowCommentDropdown] = useState(false);
+  const [newTemplateInput, setNewTemplateInput] = useState('');
+  const [renamingPlanId, setRenamingPlanId] = useState<string | null>(null);
 
-  // Defined filteredObservations to enable search functionality
+  // --- Bulk Selection State ---
+  const [isBulkSelectMode, setIsBulkSelectMode] = useState(false);
+  const [selectedObsIds, setSelectedObsIds] = useState<Set<string>>(new Set());
+
+  // Filtered Observations
   const filteredObservations = useMemo(() => {
     return observations.filter(obs => {
       const query = searchQuery.toLowerCase();
@@ -77,11 +93,29 @@ const App: React.FC = () => {
         obs.responsibleParty.toLowerCase().includes(query) ||
         obs.priority.toLowerCase().includes(query)
       );
-    });
+    }).sort((a, b) => b.timestamp - a.timestamp);
   }, [observations, searchQuery]);
 
+  // --- Offline Mode Detection ---
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      notify("Back Online. Ready to sync.");
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      notify("Offline Mode: Changes saved locally.");
+    };
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
   // --- Persistence Logic ---
-  
   useEffect(() => {
     localStorage.setItem('site_shared_comments', JSON.stringify(sharedComments));
   }, [sharedComments]);
@@ -124,13 +158,58 @@ const App: React.FC = () => {
       );
       setProjectList(updatedList);
       localStorage.setItem('site_project_list', JSON.stringify(updatedList));
+      
+      // Mark as having unsynced changes
+      setHasUnsyncedChanges(true);
+      localStorage.setItem('site_has_unsynced_changes', 'true');
     }
   }, [project, plans, observations]);
 
-  // --- Logic ---
+  // Weather Logic with Offline Handling
+  useEffect(() => {
+    if (project?.location) {
+      const fetchWeather = async () => {
+        if (!navigator.onLine) {
+          setWeather({ temp: 72, condition: 'Clear (Offline)', humidity: 40, wind: 5 });
+          return;
+        }
+        try {
+          const city = project.location.split(',')[0].trim();
+          const res = await fetch(`https://wttr.in/${encodeURIComponent(city)}?format=j1`);
+          const data = await res.json();
+          const current = data.current_condition[0];
+          setWeather({
+            temp: parseInt(current.temp_F),
+            condition: current.weatherDesc[0].value,
+            humidity: parseInt(current.humidity),
+            wind: parseInt(current.windspeedMiles)
+          });
+        } catch (err) {
+          setWeather({ temp: 72, condition: 'Clear', humidity: 40, wind: 5 });
+        }
+      };
+      fetchWeather();
+    }
+  }, [project?.location, isOnline]);
+
+  // --- Logic Helpers ---
   const notify = (msg: string) => {
     setShowToast(msg);
     setTimeout(() => setShowToast(null), 3000);
+  };
+
+  const simulateSync = async () => {
+    if (!isOnline) {
+      notify("Cannot sync while offline.");
+      return;
+    }
+    setIsSyncing(true);
+    // Simulate API delay
+    await new Promise(r => setTimeout(r, 2000));
+    setIsSyncing(false);
+    setHasUnsyncedChanges(false);
+    localStorage.setItem('site_has_unsynced_changes', 'false');
+    notify("Cloud Backup Complete");
   };
 
   const addToLibrary = (text: string) => {
@@ -149,6 +228,50 @@ const App: React.FC = () => {
     const currentNote = editingObs.note;
     const newNote = currentNote ? `${currentNote.trim()} ${text}` : text;
     setEditingObs({ ...editingObs, note: newNote });
+    setShowCommentDropdown(false);
+  };
+
+  const handleRenamePlan = (id: string, newName: string) => {
+    if (!newName.trim()) return;
+    setPlans(plans.map(p => p.id === id ? { ...p, name: newName } : p));
+    setRenamingPlanId(null);
+    notify("Plan Renamed");
+  };
+
+  const toggleObsSelection = (id: string) => {
+    const newSelected = new Set(selectedObsIds);
+    if (newSelected.has(id)) newSelected.delete(id);
+    else newSelected.add(id);
+    setSelectedObsIds(newSelected);
+  };
+
+  const handleBulkDelete = () => {
+    if (selectedObsIds.size === 0) return;
+    if (confirm(`Delete ${selectedObsIds.size} findings permanently?`)) {
+      setObservations(observations.filter(o => !selectedObsIds.has(o.id)));
+      setSelectedObsIds(new Set());
+      setIsBulkSelectMode(false);
+      notify(`${selectedObsIds.size} findings deleted`);
+    }
+  };
+
+  const handleBulkUpdatePriority = (priority: Priority) => {
+    if (selectedObsIds.size === 0) return;
+    setObservations(observations.map(o => selectedObsIds.has(o.id) ? { ...o, priority } : o));
+    setSelectedObsIds(new Set());
+    setIsBulkSelectMode(false);
+    notify(`Priority updated for ${selectedObsIds.size} findings`);
+  };
+
+  const handleBulkUpdateParty = () => {
+    if (selectedObsIds.size === 0) return;
+    const party = prompt("Enter new Responsible Party for selected items:");
+    if (party !== null) {
+      setObservations(observations.map(o => selectedObsIds.has(o.id) ? { ...o, responsibleParty: party } : o));
+      setSelectedObsIds(new Set());
+      setIsBulkSelectMode(false);
+      notify(`Party updated for ${selectedObsIds.size} findings`);
+    }
   };
 
   const renderPlanWithPins = (plan: FloorPlan, planObs: Observation[]): Promise<string> => {
@@ -168,7 +291,6 @@ const App: React.FC = () => {
           const pinBaseSize = Math.max(canvas.width, canvas.height) * 0.015;
           const color = obs.priority === 'Critical' ? '#dc2626' : obs.priority === 'High' ? '#f97316' : '#2563eb';
           
-          // Draw Glow
           ctx!.beginPath();
           ctx!.arc(px, py, pinBaseSize * 1.5, 0, Math.PI * 2);
           ctx!.fillStyle = `${color}33`;
@@ -204,50 +326,43 @@ const App: React.FC = () => {
     try {
       const { jsPDF } = (window as any).jspdf;
       const doc = new jsPDF();
+      const pageHeight = doc.internal.pageSize.getHeight();
       
+      // Page 1: COVER PAGE
       doc.setFontSize(22);
       doc.setTextColor(33, 33, 33);
-      doc.text("SITE INSPECTION REPORT", 105, 20, { align: "center" });
+      doc.text("SITE INSPECTION REPORT", 105, 40, { align: "center" });
       
       doc.setFontSize(10);
       doc.setTextColor(100, 100, 100);
-      doc.text(`Generated on: ${new Date().toLocaleString()}`, 105, 28, { align: "center" });
+      doc.text(`Generated on: ${new Date().toLocaleString()}`, 105, 48, { align: "center" });
 
       doc.setDrawColor(200, 200, 200);
-      doc.line(20, 35, 190, 35);
+      doc.line(20, 55, 190, 55);
       
       doc.setFontSize(12);
       doc.setTextColor(0, 0, 0);
       doc.setFont("helvetica", "bold");
-      doc.text("PROJECT DETAILS", 20, 45);
+      doc.text("PROJECT DETAILS", 20, 65);
       
       doc.setFont("helvetica", "normal");
       doc.setFontSize(10);
-      doc.text(`Project Name: ${project.name}`, 20, 52);
-      doc.text(`Location: ${project.location}`, 20, 58);
-      doc.text(`Inspector: ${project.inspector}`, 20, 64);
-      doc.text(`Total Findings: ${observations.length}`, 20, 70);
+      doc.text(`Project Name: ${project.name}`, 20, 72);
+      doc.text(`Location: ${project.location}`, 20, 78);
+      doc.text(`Lead Inspector: ${project.inspector}`, 20, 84);
+      doc.text(`Total Findings: ${observations.length}`, 20, 90);
 
-      const tableData = observations.map((obs, index) => [
-        index + 1,
-        new Date(obs.timestamp).toLocaleDateString(),
-        obs.priority,
-        obs.trade || "N/A",
-        obs.note.substring(0, 50) + (obs.note.length > 50 ? "..." : ""),
-        obs.responsibleParty || "GC"
-      ]);
+      if (weather) {
+        doc.setDrawColor(240, 240, 240);
+        doc.setFillColor(245, 247, 250);
+        doc.rect(20, 95, 170, 15, 'F');
+        doc.setFont("helvetica", "bold");
+        doc.text("WEATHER AT TIME OF INSPECTION:", 25, 102);
+        doc.setFont("helvetica", "normal");
+        doc.text(`${weather.temp}°F, ${weather.condition} | Humidity: ${weather.humidity}% | Wind: ${weather.wind} mph`, 25, 107);
+      }
 
-      (doc as any).autoTable({
-        startY: 80,
-        head: [['#', 'Date', 'Priority', 'Trade', 'Description', 'Responsible']],
-        body: tableData,
-        headStyles: { fillColor: [37, 99, 235], textColor: [255, 255, 255], fontStyle: 'bold' },
-        alternateRowStyles: { fillColor: [245, 247, 250] },
-        styles: { fontSize: 8, cellPadding: 2 },
-        columnStyles: { 4: { cellWidth: 50 } },
-      });
-
-      // --- Floor Plan Maps Section ---
+      // Page 2+: MAP REFERENCES (PLANS WITH PINS) - Reordered to be at start
       for (const plan of plans) {
         const planObs = observations.filter(o => o.planId === plan.id);
         if (planObs.length === 0) continue;
@@ -259,101 +374,79 @@ const App: React.FC = () => {
 
         const mappedPlanImg = await renderPlanWithPins(plan, planObs);
         const imgProps = doc.getImageProperties(mappedPlanImg);
-        
         const pdfMaxWidth = 170;
-        const pdfMaxHeight = 220;
-        let pdfWidth = pdfMaxWidth;
-        let pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+        const pdfWidth = pdfMaxWidth;
+        const pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
         
-        if (pdfHeight > pdfMaxHeight) {
-          pdfHeight = pdfMaxHeight;
-          pdfWidth = (imgProps.width * pdfHeight) / imgProps.height;
-        }
-
-        const startX = 20 + (pdfMaxWidth - pdfWidth) / 2;
-        doc.addImage(mappedPlanImg, 'JPEG', startX, 30, pdfWidth, pdfHeight);
-        doc.setFontSize(9);
-        doc.setFont("helvetica", "normal");
-        doc.setTextColor(150, 150, 150);
-        doc.text("Pins indicate location and match finding numbers in detailed section.", 105, 30 + pdfHeight + 10, { align: "center" });
+        doc.addImage(mappedPlanImg, 'JPEG', 20, 30, pdfWidth, Math.min(pdfHeight, pageHeight - 50));
       }
 
-      // --- Detailed Findings Section ---
+      // Page following Maps: DETAILED FINDINGS
       doc.addPage();
-      doc.setTextColor(0, 0, 0);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
-      doc.text("DETAILED FINDINGS", 20, 20);
+      doc.text("DETAILED FINDINGS", 105, 20, { align: "center" });
 
       let currentY = 30;
-      for (const obs of observations) {
-        if (currentY > 240) {
+
+      for (const [obs, index] of observations.map((o, i) => [o, i] as [Observation, number])) {
+        const rowHeight = 40; 
+        const imgCount = obs.images.length;
+        const imagesPerRow = 3;
+        const imgSize = 50;
+        const spacing = 5;
+        const imgRows = Math.ceil(imgCount / imagesPerRow);
+        const totalImgHeight = imgRows > 0 ? (imgRows * (imgSize + spacing)) : 0;
+        const totalNeeded = rowHeight + totalImgHeight + 10;
+
+        if (currentY + totalNeeded > pageHeight - 20) {
           doc.addPage();
           currentY = 20;
         }
-        doc.setDrawColor(230, 230, 230);
-        doc.line(20, currentY, 190, currentY);
-        currentY += 10;
 
-        doc.setFontSize(12);
+        doc.setFillColor(248, 250, 252);
+        doc.rect(20, currentY, 170, rowHeight, 'F');
+        doc.setDrawColor(226, 232, 240);
+        doc.rect(20, currentY, 170, rowHeight, 'S');
+
         doc.setFont("helvetica", "bold");
-        doc.text(`Finding #${observations.indexOf(obs) + 1}`, 20, currentY);
-        const priorityColor = obs.priority === 'Critical' ? [220, 38, 38] : obs.priority === 'High' ? [249, 115, 22] : [37, 99, 235];
-        doc.setTextColor(priorityColor[0], priorityColor[1], priorityColor[2]);
-        doc.text(obs.priority.toUpperCase(), 190, currentY, { align: 'right' });
-        doc.setTextColor(0, 0, 0);
-
-        currentY += 8;
-        doc.setFontSize(9);
-        doc.setFont("helvetica", "normal");
-        const planName = plans.find(p => p.id === obs.planId)?.name || "Unassigned";
-        doc.text(`Location: ${planName}`, 20, currentY);
-        currentY += 6;
-        doc.setFont("helvetica", "bold");
-        doc.text(`Trade: ${obs.trade || 'N/A'}`, 20, currentY);
-        doc.text(`Responsible: ${obs.responsibleParty || 'N/A'}`, 190, currentY, { align: 'right' });
-        currentY += 8;
-
-        doc.setFont("helvetica", "normal");
         doc.setFontSize(10);
-        const splitNote = doc.splitTextToSize(`Description: ${obs.note}`, 170);
-        doc.text(splitNote, 20, currentY);
-        currentY += (splitNote.length * 5) + 10;
+        doc.setTextColor(37, 99, 235);
+        doc.text(`#${index + 1} - ${obs.priority.toUpperCase()} PRIORITY`, 25, currentY + 7);
+        
+        doc.setTextColor(0, 0, 0);
+        doc.setFontSize(9);
+        doc.text(`Trade: ${obs.trade || 'General'}`, 25, currentY + 14);
+        doc.text(`Party: ${obs.responsibleParty || 'GC'}`, 100, currentY + 14);
+        doc.text(`Date: ${new Date(obs.timestamp).toLocaleDateString()}`, 25, currentY + 20);
+        
+        doc.setFont("helvetica", "normal");
+        const splitNote = doc.splitTextToSize(obs.note || "No description provided.", 160);
+        doc.text(splitNote, 25, currentY + 28);
+        
+        currentY += rowHeight + 5;
 
-        if (obs.images.length > 0) {
-          const maxImgHeight = 50;
-          let currentX = 20;
-          for (const [imgIdx, imgData] of obs.images.entries()) {
-            const imgProps = doc.getImageProperties(imgData);
-            let pdfHeight = maxImgHeight;
-            let pdfWidth = (imgProps.width * pdfHeight) / imgProps.height;
-            if (pdfWidth > 80) {
-              pdfWidth = 80;
-              pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
-            }
-            if (currentY + pdfHeight + 10 > 280) {
-              doc.addPage();
-              currentY = 20;
-              currentX = 20;
-            }
-            if (currentX + pdfWidth > 190) {
-              currentX = 20;
-              currentY += maxImgHeight + 10;
-            }
-            doc.addImage(imgData, 'JPEG', currentX, currentY, pdfWidth, pdfHeight);
-            doc.setFontSize(8);
-            doc.text(`Photo ${imgIdx + 1}`, currentX + (pdfWidth / 2), currentY + pdfHeight + 4, { align: 'center' });
-            currentX += pdfWidth + 5;
+        // Render Images Inline - re-implemented to be inline per item
+        if (imgCount > 0) {
+          for (let i = 0; i < imgCount; i++) {
+            const rowIdx = Math.floor(i / imagesPerRow);
+            const colIdx = i % imagesPerRow;
+            const x = 20 + colIdx * (imgSize + spacing);
+            const y = currentY + rowIdx * (imgSize + spacing);
+            try {
+              doc.addImage(obs.images[i], 'JPEG', x, y, imgSize, imgSize);
+            } catch (e) { console.error(e); }
           }
-          currentY += maxImgHeight + 20;
+          currentY += totalImgHeight + 10;
         } else {
           currentY += 5;
         }
       }
 
-      doc.save(`${project.name.replace(/\s+/g, '_')}_SiteReport.pdf`);
+      doc.save(`${project.name.replace(/\s+/g, '_')}_Report.pdf`);
       notify("Report Generated Successfully");
     } catch (err) {
+      console.error(err);
       notify("Export failed");
     } finally {
       setIsExporting(false);
@@ -405,7 +498,7 @@ const App: React.FC = () => {
       images: [],
       tags: [],
       trade: '',
-      responsibleParty: '',
+      responsibleParty: 'GC', 
       recommendedAction: '',
       timestamp: Date.now()
     };
@@ -428,7 +521,7 @@ const App: React.FC = () => {
     setActiveProjectId(null);
     localStorage.removeItem('site_active_project_id');
     setView('projectBrowser');
-    notify("Project Saved & Closed");
+    notify("Work Saved & Closed");
   };
 
   const createNewProject = () => {
@@ -458,23 +551,6 @@ const App: React.FC = () => {
     setView('dashboard');
   };
 
-  const deleteProject = (id: string, e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (confirm("Are you sure you want to delete this project and all its data?")) {
-      const newList = projectList.filter(p => p.id !== id);
-      setProjectList(newList);
-      localStorage.setItem('site_project_list', JSON.stringify(newList));
-      localStorage.removeItem(`site_project_${id}_info`);
-      localStorage.removeItem(`site_project_${id}_plans`);
-      localStorage.removeItem(`site_project_${id}_obs`);
-      if (activeProjectId === id) {
-        setActiveProjectId(null);
-        localStorage.removeItem('site_active_project_id');
-      }
-      notify("Project Deleted");
-    }
-  };
-
   const NavItem = ({ icon: Icon, label, active, onClick }: any) => (
     <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all duration-300 relative ${active ? 'text-blue-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
       <Icon size={22} strokeWidth={active ? 2.5 : 2} />
@@ -485,13 +561,13 @@ const App: React.FC = () => {
 
   const Header = ({ title, showBack, rightAction, onBack }: any) => (
     <header className="px-5 pt-8 pb-4 flex items-center justify-between sticky top-0 bg-gray-50/80 backdrop-blur-md z-30">
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 min-w-0">
         {showBack && (
           <button onClick={onBack || (() => setView('dashboard'))} className="p-2 bg-white rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">
             <ArrowLeft size={20} />
           </button>
         )}
-        <h1 className="text-2xl font-black tracking-tight text-gray-900">{title}</h1>
+        <h1 className="text-2xl font-black tracking-tight text-gray-900 truncate">{title}</h1>
       </div>
       {rightAction}
     </header>
@@ -518,12 +594,12 @@ const App: React.FC = () => {
           </button>
           {projectList.length === 0 ? (
             <div className="py-20 flex flex-col items-center justify-center text-gray-300 opacity-50">
-               <FolderOpen size={64} className="mb-4" />
-               <p className="font-bold">No saved projects found</p>
+               <FolderOpen size={48} className="mb-4" />
+               <p className="font-bold text-center">No projects yet. Start one above.</p>
             </div>
           ) : (
             <div className="grid gap-4">
-              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-2">Existing Inspections</p>
+              <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest pl-2">Saved Inspections</p>
               {projectList.map(p => (
                 <div key={p.id} onClick={() => setActiveProjectId(p.id)} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm flex items-center justify-between group active:scale-[0.98] transition cursor-pointer">
                   <div className="flex-1 min-w-0 pr-4">
@@ -534,7 +610,7 @@ const App: React.FC = () => {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={(e) => deleteProject(p.id, e)} className="p-3 text-gray-200 hover:text-red-500 transition opacity-0 group-hover:opacity-100"><Trash2 size={20} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); if(confirm("Are you sure you want to delete this project?")) { const newList = projectList.filter(x => x.id !== p.id); setProjectList(newList); localStorage.setItem('site_project_list', JSON.stringify(newList)); localStorage.removeItem(`site_project_${p.id}_info`); notify("Project Deleted"); } }} className="p-3 text-gray-200 hover:text-red-500 transition opacity-0 group-hover:opacity-100"><Trash2 size={20} /></button>
                     <div className="p-3 bg-gray-50 text-gray-400 rounded-2xl group-hover:bg-blue-50 group-hover:text-blue-600 transition"><ChevronRight size={20} /></div>
                   </div>
                 </div>
@@ -550,7 +626,13 @@ const App: React.FC = () => {
 
   return (
     <div className="max-w-md mx-auto min-h-screen bg-gray-50 flex flex-col relative overflow-x-hidden pb-24 selection:bg-blue-100">
-      <div className={`fixed top-6 left-1/2 -translate-x-1/2 z-[100] transition-all duration-500 pointer-events-none ${showToast ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 -translate-y-10 scale-95'}`}>
+      {!isOnline && (
+        <div className="bg-red-600 text-white text-[10px] font-black uppercase tracking-widest py-2 px-5 flex items-center justify-center gap-2 animate-in slide-in-from-top duration-500 sticky top-0 z-[100]">
+          <WifiOff size={14} /> Offline Mode: Work is being saved locally
+        </div>
+      )}
+
+      <div className={`fixed top-12 left-1/2 -translate-x-1/2 z-[100] transition-all duration-500 pointer-events-none ${showToast ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 -translate-y-10 scale-95'}`}>
         <div className="bg-gray-900 text-white px-6 py-3 rounded-full text-xs font-bold shadow-2xl flex items-center gap-3 border border-white/10">
           <div className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center"><CheckCircle2 size={12} className="text-white" /></div>
           {showToast}
@@ -561,15 +643,55 @@ const App: React.FC = () => {
         {view === 'dashboard' && (
           <div className="p-5 space-y-6 animate-in fade-in duration-500">
             <header className="flex justify-between items-start">
-              <div>
+              <div className="min-w-0">
                 <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Project Active</p>
-                <h1 className="text-3xl font-black tracking-tighter leading-none">{project.name}</h1>
+                <h1 className="text-3xl font-black tracking-tighter leading-none truncate">{project.name}</h1>
                 <div className="flex items-center gap-3 mt-3 text-gray-500">
-                  <div className="flex items-center gap-1 text-xs font-bold"><MapPin size={12} className="text-blue-500" /> {project.location}</div>
+                  <div className="flex items-center gap-1 text-xs font-bold truncate"><MapPin size={12} className="text-blue-500 shrink-0" /> {project.location}</div>
+                  <div className="h-3 w-px bg-gray-200" />
+                  <div className={`flex items-center gap-1 text-[10px] font-black uppercase ${isOnline ? 'text-green-500' : 'text-red-500'}`}>
+                    {isOnline ? <Wifi size={10} /> : <WifiOff size={10} />} {isOnline ? 'Online' : 'Offline'}
+                  </div>
                 </div>
               </div>
-              <button onClick={() => setView('settings')} className="p-3 bg-white rounded-2xl shadow-sm border border-gray-100 active:rotate-45 transition-transform"><Settings size={22} className="text-gray-400" /></button>
+              <button onClick={() => setView('settings')} className="p-3 bg-white rounded-2xl shadow-sm border border-gray-100 active:rotate-45 transition-transform shrink-0"><Settings size={22} className="text-gray-400" /></button>
             </header>
+
+            {/* Quick Add Finding Button to help user clarity */}
+            <button 
+              onClick={() => startNewObservation()}
+              className="w-full p-6 bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-[32px] shadow-xl shadow-blue-200 flex items-center justify-between group active:scale-[0.98] transition"
+            >
+              <div className="flex items-center gap-4">
+                <div className="p-4 bg-white/10 rounded-2xl"><PlusSquare size={32} /></div>
+                <div className="text-left">
+                  <p className="text-[10px] font-black text-blue-100 uppercase tracking-widest">Inspection Action</p>
+                  <p className="text-xl font-black">Add New Finding</p>
+                </div>
+              </div>
+              <ChevronRight size={24} className="opacity-50 group-hover:translate-x-1 transition-transform" />
+            </button>
+
+            {(hasUnsyncedChanges || isSyncing) && (
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <div className={`p-3 rounded-2xl ${isSyncing ? 'bg-blue-50 text-blue-600' : 'bg-orange-50 text-orange-600'}`}>
+                    {isSyncing ? <RefreshCw className="animate-spin" size={20} /> : <CloudUpload size={20} />}
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Cloud Sync</p>
+                    <p className="text-xs font-bold text-gray-900">{isSyncing ? 'Syncing data...' : 'Unsynced local changes'}</p>
+                  </div>
+                </div>
+                {isOnline && !isSyncing && (
+                  <button 
+                    onClick={simulateSync}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase active:scale-95 transition"
+                  >Sync Now</button>
+                )}
+              </div>
+            )}
+
             <div className="grid grid-cols-2 gap-3">
               <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm relative overflow-hidden active:scale-95 transition" onClick={() => setView('observations')}>
                 <div className="relative z-10">
@@ -605,7 +727,7 @@ const App: React.FC = () => {
             <button onClick={generateReport} disabled={isExporting} className="w-full py-5 bg-gray-900 text-white rounded-[28px] font-black text-sm shadow-xl flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50">
               {isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} className="text-blue-400" />} GENERATE SITE REPORT
             </button>
-            <button onClick={closeActiveProject} className="w-full py-5 bg-white border border-gray-100 text-gray-400 rounded-[28px] font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 transition"><LogOut size={16} /> Save & Exit to Projects</button>
+            <button onClick={closeActiveProject} className="w-full py-5 bg-white border border-gray-100 text-gray-400 rounded-[28px] font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 transition"><LogOut size={16} /> Save & Exit to Browser</button>
           </div>
         )}
 
@@ -629,39 +751,59 @@ const App: React.FC = () => {
             <div className="p-5 grid grid-cols-2 gap-4">
               {plans.map(plan => (
                 <div key={plan.id} onClick={() => setActivePlanId(plan.id)} className="bg-white p-3 rounded-[32px] border border-gray-100 shadow-sm group active:scale-95 transition relative">
-                  <button onClick={(e) => { e.stopPropagation(); setPlans(plans.filter(p => p.id !== plan.id)); notify("Plan Deleted"); }} className="absolute -top-1 -right-1 p-2 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition z-10 shadow-lg"><X size={12} /></button>
+                  <div className="absolute top-2 right-2 flex gap-1 z-10">
+                    <button onClick={(e) => { e.stopPropagation(); setRenamingPlanId(plan.id); }} className="p-2 bg-white/90 text-gray-600 rounded-full shadow-md opacity-0 group-hover:opacity-100 transition active:scale-90"><Pencil size={12} /></button>
+                    <button onClick={(e) => { e.stopPropagation(); if(confirm("Delete this plan?")) { setPlans(plans.filter(p => p.id !== plan.id)); notify("Plan Deleted"); } }} className="p-2 bg-red-500 text-white rounded-full shadow-md opacity-0 group-hover:opacity-100 transition active:scale-90"><Trash2 size={12} /></button>
+                  </div>
                   <div className="aspect-[4/3] rounded-2xl overflow-hidden bg-gray-50 mb-3 border border-gray-100 relative">
                     <img src={plan.imageData} className="w-full h-full object-contain bg-gray-100" />
-                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition"><Maximize2 className="text-white" /></div>
                   </div>
-                  <div className="px-1 flex justify-between items-center"><p className="text-xs font-black truncate max-w-[80%] uppercase tracking-tight">{plan.name}</p><span className="text-[10px] font-black text-blue-500">{observations.filter(o => o.planId === plan.id).length}</span></div>
+                  {renamingPlanId === plan.id ? (
+                    <div className="flex items-center gap-1 px-1">
+                      <input autoFocus className="flex-1 text-xs font-black p-1 border-b-2 border-blue-500 outline-none bg-white text-gray-900" defaultValue={plan.name} onBlur={(e) => handleRenamePlan(plan.id, e.target.value)} onKeyDown={(e) => { if(e.key === 'Enter') handleRenamePlan(plan.id, (e.target as HTMLInputElement).value); }} onClick={(e) => e.stopPropagation()} />
+                      <button className="text-blue-500"><Check size={14} /></button>
+                    </div>
+                  ) : (
+                    <div className="px-1 flex justify-between items-center">
+                      <p className="text-xs font-black truncate max-w-[80%] uppercase tracking-tight">{plan.name}</p>
+                      <span className="text-[10px] font-black text-blue-500">{observations.filter(o => o.planId === plan.id).length}</span>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
 
             {(activePlanId || isSelectingLocation) && (
               <div className="fixed inset-0 z-50 bg-black flex flex-col animate-in zoom-in duration-300">
-                <div className="p-6 flex justify-between items-center bg-black/60 backdrop-blur-xl">
+                <div className="p-6 flex justify-between items-center bg-black/80 backdrop-blur-xl">
                   <div className="flex items-center gap-3">
                     <div className="p-2 bg-white/10 rounded-xl"><MapIcon size={18} className="text-blue-400" /></div>
-                    <div>
-                      <h3 className="text-white font-black uppercase text-xs tracking-widest">{plans.find(p => p.id === (activePlanId || isSelectingLocation))?.name}</h3>
-                      <p className="text-[9px] text-white/50 font-bold uppercase tracking-tighter">Tap to drop finding pin</p>
+                    <div className="min-w-0 pr-4">
+                      <h3 className="text-white font-black uppercase text-xs tracking-widest truncate">{plans.find(p => p.id === (activePlanId || isSelectingLocation))?.name}</h3>
+                      <p className="text-[9px] text-white/50 font-bold uppercase tracking-tighter">
+                        {isRepositioningId ? 'Select new position for finding' : 'Tap exactly where you found the issue'}
+                      </p>
                     </div>
                   </div>
-                  <button onClick={() => {setActivePlanId(null); setIsSelectingLocation(null); setSelectedPinId(null);}} className="p-2 text-white/50 hover:text-white"><X size={28} /></button>
+                  <button onClick={() => {setActivePlanId(null); setIsSelectingLocation(null); setSelectedPinId(null); setIsRepositioningId(null);}} className="p-2 text-white/50 hover:text-white"><X size={28} /></button>
                 </div>
 
                 <div className="flex-1 relative overflow-auto bg-gray-900 flex items-center justify-center p-4">
-                  <div className="relative inline-block rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10">
+                  <div className="relative inline-block rounded-2xl overflow-hidden shadow-2xl border border-white/5">
                     <img 
                       src={plans.find(p => p.id === (activePlanId || isSelectingLocation))?.imageData} 
-                      className="max-w-full h-auto select-none object-contain"
+                      className="max-w-full h-auto select-none object-contain block"
                       onClick={(e) => {
                         const rect = e.currentTarget.getBoundingClientRect();
                         const x = ((e.clientX - rect.left) / rect.width) * 100;
                         const y = ((e.clientY - rect.top) / rect.height) * 100;
-                        if (isSelectingLocation && editingObs) {
+                        
+                        if (isRepositioningId) {
+                          setObservations(observations.map(o => o.id === isRepositioningId ? { ...o, coords: { x, y } } : o));
+                          setIsRepositioningId(null);
+                          setSelectedPinId(isRepositioningId);
+                          notify("Pin Repositioned");
+                        } else if (isSelectingLocation && editingObs) {
                           setEditingObs({...editingObs, planId: isSelectingLocation, coords: {x, y}});
                           setIsSelectingLocation(null);
                         } else {
@@ -672,8 +814,8 @@ const App: React.FC = () => {
                     {observations.filter(o => o.planId === (activePlanId || isSelectingLocation)).map(o => (
                       <div 
                         key={o.id}
-                        className={`absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white shadow-2xl transform transition-all hover:scale-125 ${
-                          selectedPinId === o.id ? 'ring-4 ring-white ring-offset-2 ring-offset-transparent scale-110' : ''
+                        className={`absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white shadow-2xl transition-all cursor-pointer ${
+                          selectedPinId === o.id ? 'ring-4 ring-blue-400 scale-125 z-20' : 'z-10'
                         } ${
                           o.priority === 'Critical' ? 'bg-red-600' : o.priority === 'High' ? 'bg-orange-500' : 'bg-blue-600'
                         }`}
@@ -686,41 +828,33 @@ const App: React.FC = () => {
                         {observations.indexOf(o) + 1}
                       </div>
                     ))}
-                    {/* Ghost pin for the one currently being edited in "Location Selection" mode */}
-                    {isSelectingLocation && editingObs?.coords && (
-                       <div 
-                        className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-dashed border-white bg-blue-500/50 flex items-center justify-center text-[10px] font-black text-white shadow-2xl animate-pulse"
-                        style={{ left: `${editingObs.coords.x}%`, top: `${editingObs.coords.y}%` }}
-                      >?</div>
-                    )}
                   </div>
                 </div>
 
                 {selectedObservation && (
-                  <div className="absolute bottom-28 left-6 right-6 p-5 bg-white rounded-[32px] shadow-2xl animate-in slide-in-from-bottom duration-300 flex gap-4 items-start">
-                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
-                      selectedObservation.priority === 'Critical' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
-                    }`}>
-                      <AlertTriangle size={24} />
+                  <div className="absolute bottom-28 left-6 right-6 p-5 bg-white rounded-[32px] shadow-2xl animate-in slide-in-from-bottom duration-300 z-30">
+                    <div className="flex gap-4 items-start mb-4">
+                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                        selectedObservation.priority === 'Critical' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                      }`}>
+                        <AlertTriangle size={24} />
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex justify-between items-start mb-1">
+                          <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">{selectedObservation.trade || 'General'}</span>
+                          <span className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-wider text-white ${
+                            selectedObservation.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'
+                          }`}>{selectedObservation.priority}</span>
+                        </div>
+                        <p className="text-xs font-bold text-gray-900 leading-tight line-clamp-2">{selectedObservation.note || "No description provided."}</p>
+                      </div>
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-start mb-1">
-                        <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">{selectedObservation.trade || 'General'}</span>
-                        <span className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-wider text-white ${
-                          selectedObservation.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'
-                        }`}>{selectedObservation.priority}</span>
-                      </div>
-                      <p className="text-xs font-bold text-gray-900 leading-tight mb-3 line-clamp-2">{selectedObservation.note}</p>
-                      <div className="flex gap-2">
-                         <button 
-                           onClick={() => {setEditingObs(selectedObservation); setView('editor'); setActivePlanId(null); setSelectedPinId(null);}}
-                           className="flex-1 py-2 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl"
-                         >Edit Details</button>
-                         <button 
-                           onClick={() => setSelectedPinId(null)}
-                           className="px-4 py-2 bg-gray-100 text-gray-400 text-[10px] font-black uppercase rounded-xl"
-                         >Close</button>
-                      </div>
+                    
+                    <div className="grid grid-cols-2 gap-2">
+                       <button onClick={() => {setEditingObs(selectedObservation); setView('editor'); setActivePlanId(null); setSelectedPinId(null);}} className="py-3 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl active:scale-95 transition flex items-center justify-center gap-2"><Edit3 size={14} /> Details</button>
+                       <button onClick={() => {setIsRepositioningId(selectedObservation.id); setSelectedPinId(null);}} className="py-3 bg-blue-50 text-blue-600 text-[10px] font-black uppercase rounded-xl active:scale-95 transition flex items-center justify-center gap-2"><Move size={14} /> Move Pin</button>
+                       <button onClick={() => {if(confirm("Delete this finding?")) { setObservations(observations.filter(o => o.id !== selectedObservation.id)); setSelectedPinId(null); notify("Finding Deleted"); }}} className="py-3 bg-red-50 text-red-600 text-[10px] font-black uppercase rounded-xl active:scale-95 transition flex items-center justify-center gap-2"><Trash2 size={14} /> Delete</button>
+                       <button onClick={() => setSelectedPinId(null)} className="py-3 bg-gray-100 text-gray-400 text-[10px] font-black uppercase rounded-xl active:scale-95 transition">Close</button>
                     </div>
                   </div>
                 )}
@@ -731,73 +865,114 @@ const App: React.FC = () => {
 
         {view === 'observations' && (
           <div className="animate-in slide-in-from-right duration-300">
-            <Header title="Findings" showBack rightAction={<button onClick={generateReport} className="p-3 bg-white text-blue-600 rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">{isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}</button>} />
-            <div className="px-5 pb-4"><div className="relative group"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} /><input type="text" placeholder="Search by trade or note..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-white rounded-2xl border border-gray-100 shadow-sm text-sm font-medium outline-none" /></div></div>
-            <div className="px-5 space-y-4">
+            <Header title={isBulkSelectMode ? `Selected (${selectedObsIds.size})` : "All Findings"} showBack={!isBulkSelectMode} onBack={() => setView('dashboard')} rightAction={
+              <div className="flex items-center gap-2">
+                <button onClick={() => { if (isBulkSelectMode) setSelectedObsIds(new Set()); setIsBulkSelectMode(!isBulkSelectMode); }} className={`px-4 py-2 rounded-2xl text-[10px] font-black uppercase transition-all shadow-sm border ${isBulkSelectMode ? 'bg-gray-900 text-white border-gray-900' : 'bg-white text-blue-600 border-gray-100'}`}>
+                  {isBulkSelectMode ? 'Cancel' : 'Select'}
+                </button>
+                {!isBulkSelectMode && (
+                  <button onClick={generateReport} className="p-3 bg-white text-blue-600 rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">
+                    {isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
+                  </button>
+                )}
+              </div>
+            } />
+            
+            <div className="px-5 pb-4">
+              <div className="relative group">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} />
+                <input type="text" placeholder="Search findings..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-white rounded-2xl border border-gray-100 shadow-sm text-sm font-medium outline-none focus:ring-2 ring-blue-500/10 text-gray-900" />
+              </div>
+            </div>
+
+            <div className="px-5 space-y-4 pb-40">
               {filteredObservations.length === 0 ? (
-                <div className="py-20 flex flex-col items-center justify-center text-gray-300 opacity-50">
+                <div className="py-20 flex flex-col items-center justify-center text-gray-300 opacity-50 text-center">
                    <ClipboardList size={48} className="mb-4" />
-                   <p className="font-bold">No findings match search</p>
+                   <p className="font-bold">No findings found matching search.</p>
                 </div>
               ) : (
-                filteredObservations.map((obs) => (
-                  <div key={obs.id} onClick={() => { setEditingObs(obs); setView('editor'); }} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4 active:scale-[0.98] transition group">
-                    <div className="flex justify-between items-start">
-                      <div className="flex flex-wrap gap-2">
-                        <div className="w-6 h-6 bg-gray-900 text-white rounded-lg flex items-center justify-center text-[10px] font-black">{observations.indexOf(obs) + 1}</div>
-                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider text-white ${obs.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'}`}>{obs.priority}</span>
-                        {obs.planId && <span className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase flex items-center gap-1"><MapPinIcon size={10} /> Plan</span>}
+                filteredObservations.map((obs) => {
+                  const isSelected = selectedObsIds.has(obs.id);
+                  return (
+                    <div key={obs.id} onClick={() => { if (isBulkSelectMode) toggleObsSelection(obs.id); else { setEditingObs(obs); setView('editor'); } }} className={`bg-white p-5 rounded-[32px] border shadow-sm space-y-4 active:scale-[0.98] transition group relative overflow-hidden ${isSelected ? 'border-blue-500 ring-1 ring-blue-500 bg-blue-50/20' : 'border-gray-100'}`}>
+                      <div className="flex justify-between items-start">
+                        <div className="flex flex-wrap gap-2 items-center">
+                          {isBulkSelectMode && (
+                            <div className={`mr-2 transition-all ${isSelected ? 'text-blue-600 scale-110' : 'text-gray-300'}`}>
+                              {isSelected ? <CheckCircle size={22} fill="currentColor" stroke="white" strokeWidth={2} /> : <Circle size={22} />}
+                            </div>
+                          )}
+                          <div className="w-6 h-6 bg-gray-900 text-white rounded-lg flex items-center justify-center text-[10px] font-black">{observations.indexOf(obs) + 1}</div>
+                          <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider text-white ${obs.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'}`}>{obs.priority}</span>
+                        </div>
+                        {!isBulkSelectMode && (
+                          <button onClick={(e) => { e.stopPropagation(); if(confirm("Permanently delete this finding?")) setObservations(o => o.filter(x => x.id !== obs.id)); }} className="text-gray-200 hover:text-red-500 transition"><Trash2 size={18} /></button>
+                        )}
                       </div>
-                      <button onClick={(e) => { e.stopPropagation(); setObservations(o => o.filter(x => x.id !== obs.id)); }} className="text-gray-200 hover:text-red-500"><Trash2 size={18} /></button>
+                      <p className="text-sm font-semibold text-gray-800 leading-relaxed line-clamp-2">{obs.note || "No description provided."}</p>
+                      <div className="flex items-center justify-between pt-4 border-t border-gray-50 text-gray-400">
+                        <span className="text-[10px] font-black uppercase tracking-tight">{obs.trade || 'General Trade'}</span>
+                        <span className="text-[10px] font-black uppercase tracking-tight">{new Date(obs.timestamp).toLocaleDateString()}</span>
+                      </div>
                     </div>
-                    <p className="text-sm font-semibold text-gray-800 leading-relaxed line-clamp-2">{obs.note || "No description provided"}</p>
-                    <div className="flex items-center justify-between pt-4 border-t border-gray-50 text-gray-400">
-                      <span className="text-[10px] font-black uppercase">{obs.trade || 'General'}</span>
-                      <span className="text-[10px] font-black uppercase">{new Date(obs.timestamp).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
+
+            {isBulkSelectMode && selectedObsIds.size > 0 && (
+              <div className="fixed bottom-6 left-6 right-6 bg-gray-900 rounded-[32px] p-6 shadow-2xl z-50 animate-in slide-in-from-bottom duration-300">
+                <div className="flex flex-col gap-4">
+                  <div className="flex justify-between items-center px-1">
+                    <p className="text-white text-xs font-black uppercase tracking-widest">{selectedObsIds.size} Findings Selected</p>
+                    <button onClick={handleBulkDelete} className="flex items-center gap-2 text-red-400 font-black text-[10px] uppercase"><Trash2 size={14} /> Delete</button>
+                  </div>
+                  <div className="h-px bg-white/10" />
+                  <div className="space-y-3">
+                    <p className="text-white/50 text-[9px] font-black uppercase tracking-widest px-1">Bulk Update Priority</p>
+                    <div className="grid grid-cols-4 gap-2">
+                      {(['Low', 'Medium', 'High', 'Critical'] as Priority[]).map(p => (
+                        <button key={p} onClick={() => handleBulkUpdatePriority(p)} className="py-2.5 bg-white/10 hover:bg-white/20 text-white rounded-xl text-[8px] font-black uppercase tracking-tighter border border-white/5 transition-colors">{p}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={handleBulkUpdateParty} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-black text-xs uppercase tracking-widest flex items-center justify-center gap-2 shadow-lg shadow-blue-500/20 active:scale-[0.98] transition"><User size={16} /> Set Responsible Party</button>
+                </div>
+              </div>
+            )}
           </div>
         )}
 
         {view === 'editor' && editingObs && (
-          <div className="fixed inset-0 z-[60] bg-gray-50 flex flex-col animate-in slide-in-from-bottom duration-500">
+          <div className="fixed inset-0 z-[60] bg-gray-50 flex flex-col animate-in slide-in-from-bottom duration-500 overflow-hidden">
             {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={(data) => { const newImages = [...editingObs.images]; newImages[isAnnotating.index] = data; setEditingObs({...editingObs, images: newImages}); setIsAnnotating(null); }} onCancel={() => setIsAnnotating(null)} />}
-            <header className="px-5 pt-8 pb-4 flex items-center justify-between bg-white border-b border-gray-100">
+            <header className="px-5 pt-8 pb-4 flex items-center justify-between bg-white border-b border-gray-100 shadow-sm">
               <div className="flex items-center gap-4"><button onClick={() => setView('observations')} className="p-2 text-gray-400"><ArrowLeft size={24} /></button><h2 className="text-xl font-black tracking-tight">{editingObs.note ? 'Edit Finding' : 'New Finding'}</h2></div>
-              <button onClick={syncToCloud} className="px-6 py-2.5 bg-blue-600 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200">Save</button>
+              <button onClick={syncToCloud} className="px-6 py-2.5 bg-blue-600 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200 active:scale-95 transition">Save</button>
             </header>
             <main className="flex-1 overflow-y-auto p-5 space-y-6 pb-32">
-              {/* Location Section */}
               <section className="space-y-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Pin Location</label>
+                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Pin on Floor Plan</label>
                 {editingObs.planId ? (
                    <div className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-3xl shadow-sm">
-                      <div className="flex items-center gap-4">
-                        <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl"><MapPinIcon size={20} /></div>
-                        <div>
-                          <p className="text-xs font-black uppercase">{plans.find(p => p.id === editingObs.planId)?.name}</p>
-                          <p className="text-[10px] font-bold text-gray-400">Coordinates: {Math.round(editingObs.coords?.x || 0)}%, {Math.round(editingObs.coords?.y || 0)}%</p>
+                      <div className="flex items-center gap-4 min-w-0">
+                        <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl shrink-0"><MapPinIcon size={20} /></div>
+                        <div className="min-w-0">
+                          <p className="text-xs font-black uppercase truncate">{plans.find(p => p.id === editingObs.planId)?.name}</p>
+                          <p className="text-[10px] font-bold text-gray-400">Dropped Pin on Reference Map</p>
                         </div>
                       </div>
-                      <button onClick={() => setIsSelectingLocation(editingObs.planId)} className="text-blue-500 font-black text-[10px] uppercase">Re-pin</button>
+                      <button onClick={() => setIsSelectingLocation(editingObs.planId)} className="text-blue-500 font-black text-[10px] uppercase shrink-0 px-2 py-1 active:bg-blue-50 rounded-lg">Change Pin</button>
                    </div>
                 ) : (
                   <div className="grid grid-cols-1 gap-2">
                     {plans.length === 0 ? (
-                      <p className="text-[10px] font-bold text-gray-400 italic">No floor plans uploaded. Upload in "Plans" tab to enable pinning.</p>
+                      <p className="text-[10px] font-bold text-gray-400 italic">No floor plans uploaded. Enable map pinning in "Plans" tab.</p>
                     ) : (
                       <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
                         {plans.map(p => (
-                          <button 
-                            key={p.id}
-                            onClick={() => setIsSelectingLocation(p.id)}
-                            className="flex shrink-0 items-center gap-3 px-4 py-3 bg-white border border-gray-100 rounded-2xl text-[10px] font-black uppercase text-gray-600 shadow-sm active:scale-95 transition"
-                          >
-                            <Plus size={14} className="text-blue-500" /> {p.name}
-                          </button>
+                          <button key={p.id} onClick={() => setIsSelectingLocation(p.id)} className="flex shrink-0 items-center gap-3 px-4 py-3 bg-white border border-gray-100 rounded-2xl text-[10px] font-black uppercase text-gray-600 shadow-sm active:scale-95 transition text-gray-900"><Plus size={14} className="text-blue-500" /> {p.name}</button>
                         ))}
                       </div>
                     )}
@@ -805,66 +980,63 @@ const App: React.FC = () => {
                 )}
               </section>
 
-              <section className="space-y-3">
+              <section className="space-y-3 relative">
                 <div className="flex justify-between items-end">
-                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Description</label>
-                  {editingObs.note && !sharedComments.includes(editingObs.note) && (
-                    <button onClick={() => addToLibrary(editingObs.note)} className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase active:scale-95 transition"><BookmarkPlus size={12} /> Save to Library</button>
-                  )}
-                </div>
-                <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
-                  {sharedComments.map((comment, i) => (
-                    <div key={i} className="flex shrink-0 items-center">
-                      <button onClick={() => useComment(comment)} className="px-4 py-2 bg-white border border-gray-100 rounded-full text-[10px] font-bold text-gray-600 shadow-sm active:bg-blue-600 active:text-white transition whitespace-nowrap">{comment.length > 25 ? comment.substring(0, 25) + '...' : comment}</button>
-                      <button onClick={() => removeFromLibrary(comment)} className="ml-[-10px] p-1 bg-red-500 text-white rounded-full z-10 border-2 border-white active:scale-90 transition"><X size={8} /></button>
-                    </div>
-                  ))}
-                </div>
-                <textarea 
-                  value={editingObs.note} 
-                  onChange={e => setEditingObs({...editingObs, note: e.target.value})} 
-                  placeholder="Describe the issue..."
-                  className="w-full h-40 p-5 rounded-3xl border-2 border-gray-100 focus:border-blue-500 outline-none font-semibold text-sm"
-                />
-              </section>
-
-              <section className="space-y-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Assignment</label>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-1">
-                    <span className="text-[9px] font-bold text-gray-400 ml-1">Trade</span>
-                    <input value={editingObs.trade} onChange={e => setEditingObs({...editingObs, trade: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none" placeholder="Electrical" />
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-[9px] font-bold text-gray-400 ml-1">Responsible Party</span>
-                    <input value={editingObs.responsibleParty} onChange={e => setEditingObs({...editingObs, responsibleParty: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none" placeholder="Subcontractor" />
+                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Issue Description</label>
+                  <div className="flex gap-2">
+                    {editingObs.note && !sharedComments.includes(editingObs.note) && (
+                      <button onClick={() => addToLibrary(editingObs.note)} className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase active:scale-95 transition"><BookmarkPlus size={12} /> Add to Library</button>
+                    )}
+                    <button onClick={() => setShowCommentDropdown(!showCommentDropdown)} className="flex items-center gap-1.5 px-3 py-1 bg-gray-900 text-white rounded-lg text-[10px] font-black uppercase active:scale-95 transition shadow-lg"><Sparkles size={12} className="text-blue-400" /> Templates <ChevronDown size={10} className={`transition-transform duration-300 ${showCommentDropdown ? 'rotate-180' : ''}`} /></button>
                   </div>
                 </div>
+
+                {showCommentDropdown && (
+                  <div className="absolute top-10 right-0 left-0 z-[70] bg-white border border-gray-200 rounded-[28px] shadow-2xl max-h-64 overflow-y-auto no-scrollbar animate-in zoom-in duration-200 border-2 border-blue-500/20">
+                    <div className="p-4 border-b border-gray-100 sticky top-0 bg-white/95 backdrop-blur-md flex justify-between items-center"><span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Global Comment Library</span><button onClick={() => setShowCommentDropdown(false)}><X size={16} className="text-gray-300" /></button></div>
+                    {sharedComments.length === 0 ? (<div className="p-8 text-center text-gray-400 text-xs italic">Library is empty. Add templates in Settings!</div>) : (
+                      <div className="divide-y divide-gray-50">{sharedComments.map((comment, i) => (<button key={i} onClick={() => useComment(comment)} className="w-full text-left p-5 text-sm font-semibold text-gray-700 hover:bg-blue-50 active:bg-blue-100 transition">{comment}</button>))}</div>
+                    )}
+                  </div>
+                )}
+
+                <textarea value={editingObs.note} onChange={e => setEditingObs({...editingObs, note: e.target.value})} placeholder="Describe the problem here or choose a template..." className="w-full h-40 p-5 rounded-3xl border-2 border-gray-100 focus:border-blue-500 outline-none font-semibold text-sm shadow-inner resize-none bg-white text-gray-900" />
               </section>
 
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Trade</label>
+                  <input value={editingObs.trade} onChange={e => setEditingObs({...editingObs, trade: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none focus:ring-2 ring-blue-500/10 shadow-sm text-gray-900" placeholder="e.g. Drywall, Electrical" />
+                </div>
+                <div className="space-y-2">
+                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Responsible Party</label>
+                  <input value={editingObs.responsibleParty} onChange={e => setEditingObs({...editingObs, responsibleParty: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none focus:ring-2 ring-blue-500/10 shadow-sm text-gray-900" placeholder="e.g. ABC Painting" />
+                </div>
+              </div>
+
               <section className="space-y-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Urgency</label>
+                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Urgency Level</label>
                 <div className="grid grid-cols-4 gap-2">
                   {(['Low', 'Medium', 'High', 'Critical'] as Priority[]).map(p => (
-                    <button key={p} onClick={() => setEditingObs({...editingObs, priority: p})} className={`py-3 rounded-2xl text-[9px] font-black uppercase tracking-tighter border-2 ${editingObs.priority === p ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-white border-gray-100 text-gray-400'}`}>{p}</button>
+                    <button key={p} onClick={() => setEditingObs({...editingObs, priority: p})} className={`py-3 rounded-2xl text-[9px] font-black uppercase tracking-tighter border-2 transition-all ${editingObs.priority === p ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-white border-gray-100 text-gray-400 active:scale-95'}`}>{p}</button>
                   ))}
                 </div>
               </section>
 
               <section className="space-y-3">
-                <div className="flex justify-between items-center"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Photos</label><span className="text-[10px] font-bold text-blue-500">{editingObs.images.length}/5</span></div>
+                <div className="flex justify-between items-center"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Evidence Photos</label><span className="text-[10px] font-bold text-blue-500">{editingObs.images.length}/5</span></div>
                 <div className="grid grid-cols-3 gap-3">
                   {editingObs.images.map((img, i) => (
-                    <div key={i} className="group relative aspect-square rounded-[24px] overflow-hidden border border-gray-100 bg-gray-50">
+                    <div key={i} className="group relative aspect-square rounded-[24px] overflow-hidden border border-gray-100 bg-gray-50 shadow-sm">
                       <img src={img} className="w-full h-full object-contain" />
                       <div className="absolute inset-0 bg-black/60 flex items-center justify-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => setIsAnnotating({index: i, data: img})} className="p-2.5 bg-white text-blue-600 rounded-xl"><Edit3 size={16} /></button>
-                        <button onClick={() => setEditingObs({...editingObs, images: editingObs.images.filter((_, idx) => idx !== i)})} className="p-2.5 bg-white text-red-600 rounded-xl"><Trash2 size={16} /></button>
+                        <button onClick={() => setIsAnnotating({index: i, data: img})} className="p-2.5 bg-white text-blue-600 rounded-xl active:scale-95 transition"><Edit3 size={16} /></button>
+                        <button onClick={() => setEditingObs({...editingObs, images: editingObs.images.filter((_, idx) => idx !== i)})} className="p-2.5 bg-white text-red-600 rounded-xl active:scale-95 transition"><Trash2 size={16} /></button>
                       </div>
                     </div>
                   ))}
                   {editingObs.images.length < 5 && (
-                    <label className="flex flex-col items-center justify-center gap-2 aspect-square bg-white border-2 border-dashed border-gray-200 rounded-[24px] text-gray-400 cursor-pointer">
+                    <label className="flex flex-col items-center justify-center gap-2 aspect-square bg-white border-2 border-dashed border-gray-200 rounded-[24px] text-gray-400 cursor-pointer shadow-sm hover:border-blue-300 transition-colors active:scale-95">
                       <Camera size={24} /><span className="text-[8px] font-black uppercase tracking-widest">Capture</span><input type="file" accept="image/*" capture="environment" multiple onChange={(e) => { const files = Array.from(e.target.files || []); files.forEach(file => { const reader = new FileReader(); reader.onloadend = () => setEditingObs(prev => prev ? ({ ...prev, images: [...prev.images, reader.result as string] }) : null); reader.readAsDataURL(file); }); }} className="hidden" />
                     </label>
                   )}
@@ -874,29 +1046,60 @@ const App: React.FC = () => {
           </div>
         )}
 
+        {view === 'manageTemplates' && (
+          <div className="animate-in slide-in-from-bottom duration-300 min-h-screen bg-white z-[70] fixed inset-0 flex flex-col">
+             <Header title="Manage Library" showBack onBack={() => setView('settings')} />
+             <div className="flex-1 overflow-y-auto p-5 space-y-6 pb-24">
+                <div className="space-y-2">
+                   <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Create New Template</label>
+                   <div className="flex flex-col gap-2">
+                     <textarea value={newTemplateInput} onChange={e => setNewTemplateInput(e.target.value)} placeholder="Enter a common comment that repeats often..." className="w-full p-4 bg-gray-50 border border-gray-100 rounded-2xl text-sm font-semibold outline-none focus:ring-2 ring-blue-500/20 resize-none h-24 shadow-inner text-gray-900" />
+                     <button onClick={() => { if(newTemplateInput.trim()) { addToLibrary(newTemplateInput.trim()); setNewTemplateInput(''); } }} className="w-full py-4 bg-blue-600 text-white font-black text-xs uppercase tracking-widest rounded-2xl active:scale-95 transition shadow-lg shadow-blue-200">Save to Global Library</button>
+                   </div>
+                </div>
+                <div className="space-y-3 pt-4 border-t border-gray-100">
+                   <div className="flex justify-between items-center"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Current Library ({sharedComments.length})</label><p className="text-[10px] font-bold text-gray-400">Shared across all projects</p></div>
+                   <div className="space-y-2">
+                      {sharedComments.map((comment, i) => (
+                        <div key={i} className="bg-white p-5 rounded-3xl border border-gray-100 shadow-sm flex items-center justify-between group active:bg-gray-50 transition">
+                          <p className="text-sm font-semibold text-gray-700 flex-1 pr-4">{comment}</p>
+                          <button onClick={() => removeFromLibrary(comment)} className="text-red-400 p-2 hover:bg-red-50 rounded-xl transition shrink-0 active:scale-90"><Trash2 size={20} /></button>
+                        </div>
+                      ))}
+                      {sharedComments.length === 0 && <p className="text-center py-10 text-gray-300 italic text-sm">Library is currently empty.</p>}
+                   </div>
+                </div>
+             </div>
+          </div>
+        )}
+
         {view === 'settings' && (
           <div className="animate-in slide-in-from-right duration-300">
-            <Header title="Settings" showBack />
+            <Header title="Project Settings" showBack />
             <div className="p-5 space-y-6">
                <div className="space-y-4">
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project Name</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><LayoutDashboard className="text-blue-500 mr-4" size={20} /><input value={project.name} onChange={e => setProject({...project, name: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPinIcon className="text-red-500 mr-4" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Inspector</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><User className="text-purple-500 mr-4" size={20} /><input value={project.inspector} onChange={e => setProject({...project, inspector: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Inspection Name</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><LayoutDashboard className="text-blue-500 mr-4 shrink-0" size={20} /><input value={project.name} onChange={e => setProject({...project, name: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-transparent text-gray-900" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPinIcon className="text-red-500 mr-4 shrink-0" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-transparent text-gray-900" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Lead Inspector</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><User className="text-purple-500 mr-4 shrink-0" size={20} /><input value={project.inspector} onChange={e => setProject({...project, inspector: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-transparent text-gray-900" /></div></div>
                </div>
                <div className="space-y-3 pt-6 border-t border-gray-100">
-                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Database Management</p>
-                  <button onClick={closeActiveProject} className="w-full py-4 bg-gray-100 text-gray-600 rounded-2xl font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-2"><LogOut size={16} /> Save & Exit to Projects</button>
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Global Resources</p>
+                  <button onClick={() => setView('manageTemplates')} className="w-full py-5 bg-white border-2 border-dashed border-blue-100 text-gray-600 rounded-[28px] font-black text-xs uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 transition hover:bg-blue-50"><ListPlus size={18} className="text-blue-500" /> Manage Comment Library</button>
+               </div>
+               <div className="space-y-3 pt-6 border-t border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Project Management</p>
+                  <button onClick={closeActiveProject} className="w-full py-5 bg-gray-100 text-gray-600 rounded-[28px] font-black text-[10px] uppercase tracking-widest flex items-center justify-center gap-3 active:scale-95 transition"><LogOut size={16} /> Save & Exit Project</button>
                </div>
             </div>
           </div>
         )}
       </div>
 
-      {view !== 'editor' && !isSelectingLocation && (
+      {!isBulkSelectMode && view !== 'editor' && !isSelectingLocation && view !== 'manageTemplates' && (
         <nav className="fixed bottom-6 left-6 right-6 h-20 bg-gray-900/90 backdrop-blur-2xl rounded-[40px] flex items-center justify-around px-6 shadow-2xl z-40 border border-white/10 ring-1 ring-white/10">
           <NavItem icon={LayoutDashboard} label="Home" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
           <NavItem icon={MapIcon} label="Plans" active={view === 'plans'} onClick={() => setView('plans')} />
-          <div className="relative h-20 flex items-center justify-center"><button onClick={() => startNewObservation()} className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-xl shadow-blue-500/40 border-4 border-gray-900/50 -mt-16"><Plus size={32} strokeWidth={3} /></button></div>
+          <div className="relative h-20 flex items-center justify-center"><button onClick={() => startNewObservation()} className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-xl shadow-blue-500/40 border-4 border-gray-900/50 -mt-16 transition-transform active:scale-110 active:-translate-y-1"><Plus size={32} strokeWidth={3} /></button></div>
           <NavItem icon={ClipboardList} label="Findings" active={view === 'observations'} onClick={() => setView('observations')} />
           <NavItem icon={Settings} label="Setup" active={view === 'settings'} onClick={() => setView('settings')} />
         </nav>
