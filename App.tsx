@@ -7,7 +7,8 @@ import {
   Info, Bell, MapPin, Calendar, User, Save, FileText, Upload, Loader2,
   Maximize2, Eye, FolderOpen, LogOut, PlusCircle, Database, BookmarkPlus, Sparkles,
   Map as MapPinIcon, ChevronDown, ListPlus, Pencil, Check, Circle, CheckCircle, MoreHorizontal,
-  Wifi, WifiOff, CloudUpload, RefreshCw, Move, PlusSquare
+  Wifi, WifiOff, CloudUpload, RefreshCw, Move, PlusSquare, Image as ImageIcon,
+  Moon, Sun, MapPinned
 } from 'lucide-react';
 import { 
   Priority, Coordinates, Observation, FloorPlan, ProjectInfo, ProjectMeta, WeatherData 
@@ -78,6 +79,9 @@ const App: React.FC = () => {
   const [showCommentDropdown, setShowCommentDropdown] = useState(false);
   const [newTemplateInput, setNewTemplateInput] = useState('');
   const [renamingPlanId, setRenamingPlanId] = useState<string | null>(null);
+  
+  // New specific UI state for editor
+  const [editorDarkMode, setEditorDarkMode] = useState(() => localStorage.getItem('site_editor_dark_mode') === 'true');
 
   // --- Bulk Selection State ---
   const [isBulkSelectMode, setIsBulkSelectMode] = useState(false);
@@ -119,6 +123,10 @@ const App: React.FC = () => {
   useEffect(() => {
     localStorage.setItem('site_shared_comments', JSON.stringify(sharedComments));
   }, [sharedComments]);
+
+  useEffect(() => {
+    localStorage.setItem('site_editor_dark_mode', editorDarkMode.toString());
+  }, [editorDarkMode]);
 
   useEffect(() => {
     if (activeProjectId) {
@@ -328,7 +336,6 @@ const App: React.FC = () => {
       const doc = new jsPDF();
       const pageHeight = doc.internal.pageSize.getHeight();
       
-      // Page 1: COVER PAGE
       doc.setFontSize(22);
       doc.setTextColor(33, 33, 33);
       doc.text("SITE INSPECTION REPORT", 105, 40, { align: "center" });
@@ -362,7 +369,6 @@ const App: React.FC = () => {
         doc.text(`${weather.temp}°F, ${weather.condition} | Humidity: ${weather.humidity}% | Wind: ${weather.wind} mph`, 25, 107);
       }
 
-      // Page 2+: MAP REFERENCES (PLANS WITH PINS) - Reordered to be at start
       for (const plan of plans) {
         const planObs = observations.filter(o => o.planId === plan.id);
         if (planObs.length === 0) continue;
@@ -381,7 +387,6 @@ const App: React.FC = () => {
         doc.addImage(mappedPlanImg, 'JPEG', 20, 30, pdfWidth, Math.min(pdfHeight, pageHeight - 50));
       }
 
-      // Page following Maps: DETAILED FINDINGS
       doc.addPage();
       doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
@@ -426,7 +431,6 @@ const App: React.FC = () => {
         
         currentY += rowHeight + 5;
 
-        // Render Images Inline - re-implemented to be inline per item
         if (imgCount > 0) {
           for (let i = 0; i < imgCount; i++) {
             const rowIdx = Math.floor(i / imagesPerRow);
@@ -657,20 +661,21 @@ const App: React.FC = () => {
               <button onClick={() => setView('settings')} className="p-3 bg-white rounded-2xl shadow-sm border border-gray-100 active:rotate-45 transition-transform shrink-0"><Settings size={22} className="text-gray-400" /></button>
             </header>
 
-            {/* Quick Add Finding Button to help user clarity */}
-            <button 
-              onClick={() => startNewObservation()}
-              className="w-full p-6 bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-[32px] shadow-xl shadow-blue-200 flex items-center justify-between group active:scale-[0.98] transition"
-            >
-              <div className="flex items-center gap-4">
-                <div className="p-4 bg-white/10 rounded-2xl"><PlusSquare size={32} /></div>
-                <div className="text-left">
-                  <p className="text-[10px] font-black text-blue-100 uppercase tracking-widest">Inspection Action</p>
-                  <p className="text-xl font-black">Add New Finding</p>
+            <div className="grid grid-cols-1 gap-4">
+              <button 
+                onClick={() => startNewObservation()}
+                className="w-full p-6 bg-gradient-to-br from-blue-600 to-blue-700 text-white rounded-[32px] shadow-xl shadow-blue-200 flex items-center justify-between group active:scale-[0.98] transition"
+              >
+                <div className="flex items-center gap-4">
+                  <div className="p-4 bg-white/10 rounded-2xl"><PlusSquare size={32} /></div>
+                  <div className="text-left">
+                    <p className="text-[10px] font-black text-blue-100 uppercase tracking-widest">Inspection Action</p>
+                    <p className="text-xl font-black">Add New Finding</p>
+                  </div>
                 </div>
-              </div>
-              <ChevronRight size={24} className="opacity-50 group-hover:translate-x-1 transition-transform" />
-            </button>
+                <ChevronRight size={24} className="opacity-50 group-hover:translate-x-1 transition-transform" />
+              </button>
+            </div>
 
             {(hasUnsyncedChanges || isSyncing) && (
               <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm flex items-center justify-between">
@@ -700,14 +705,24 @@ const App: React.FC = () => {
                 </div>
                 <ClipboardList className="absolute -right-4 -bottom-4 opacity-[0.03] rotate-12" size={80} />
               </div>
-              <div className="bg-red-50 p-5 rounded-[32px] border border-red-100 shadow-sm relative overflow-hidden active:scale-95 transition" onClick={() => setView('observations')}>
+              <div className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm relative overflow-hidden active:scale-95 transition" onClick={() => setView('plans')}>
                 <div className="relative z-10">
-                  <span className="text-[10px] font-black text-red-400 uppercase tracking-widest">Critical Issues</span>
-                  <p className="text-4xl font-black mt-1 text-red-600">{observations.filter(o => o.priority === 'Critical').length}</p>
+                  <span className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Floor Plans</span>
+                  <p className="text-4xl font-black mt-1 text-gray-900">{plans.length}</p>
                 </div>
-                <AlertTriangle className="absolute -right-4 -bottom-4 opacity-[0.05] -rotate-12" size={80} />
+                <MapIcon className="absolute -right-4 -bottom-4 opacity-[0.03] rotate-12" size={80} />
+              </div>
+              <div className="bg-red-50 p-5 rounded-[32px] border border-red-100 shadow-sm relative overflow-hidden active:scale-95 transition col-span-2" onClick={() => setView('observations')}>
+                <div className="flex justify-between items-center relative z-10">
+                  <div>
+                    <span className="text-[10px] font-black text-red-400 uppercase tracking-widest">Critical Issues</span>
+                    <p className="text-4xl font-black mt-1 text-red-600">{observations.filter(o => o.priority === 'Critical').length}</p>
+                  </div>
+                  <AlertTriangle className="text-red-300" size={40} />
+                </div>
               </div>
             </div>
+
             {weather && (
               <div className="bg-gradient-to-br from-blue-600 to-blue-700 p-6 rounded-[32px] text-white shadow-xl">
                 <div className="flex justify-between items-center mb-4">
@@ -724,6 +739,7 @@ const App: React.FC = () => {
                 </div>
               </div>
             )}
+            
             <button onClick={generateReport} disabled={isExporting} className="w-full py-5 bg-gray-900 text-white rounded-[28px] font-black text-sm shadow-xl flex items-center justify-center gap-3 active:scale-95 disabled:opacity-50">
               {isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} className="text-blue-400" />} GENERATE SITE REPORT
             </button>
@@ -748,7 +764,7 @@ const App: React.FC = () => {
                 </div>
               </div>
             </div>
-            <div className="p-5 grid grid-cols-2 gap-4">
+            <div className="p-5 grid grid-cols-2 gap-4 pb-40">
               {plans.map(plan => (
                 <div key={plan.id} onClick={() => setActivePlanId(plan.id)} className="bg-white p-3 rounded-[32px] border border-gray-100 shadow-sm group active:scale-95 transition relative">
                   <div className="absolute top-2 right-2 flex gap-1 z-10">
@@ -771,95 +787,13 @@ const App: React.FC = () => {
                   )}
                 </div>
               ))}
+              {plans.length === 0 && (
+                <div className="col-span-2 py-20 text-center opacity-30 italic flex flex-col items-center gap-4">
+                  <ImageIcon size={48} />
+                  <p className="text-sm font-bold">No floor plans yet. Upload one above.</p>
+                </div>
+              )}
             </div>
-
-            {(activePlanId || isSelectingLocation) && (
-              <div className="fixed inset-0 z-50 bg-black flex flex-col animate-in zoom-in duration-300">
-                <div className="p-6 flex justify-between items-center bg-black/80 backdrop-blur-xl">
-                  <div className="flex items-center gap-3">
-                    <div className="p-2 bg-white/10 rounded-xl"><MapIcon size={18} className="text-blue-400" /></div>
-                    <div className="min-w-0 pr-4">
-                      <h3 className="text-white font-black uppercase text-xs tracking-widest truncate">{plans.find(p => p.id === (activePlanId || isSelectingLocation))?.name}</h3>
-                      <p className="text-[9px] text-white/50 font-bold uppercase tracking-tighter">
-                        {isRepositioningId ? 'Select new position for finding' : 'Tap exactly where you found the issue'}
-                      </p>
-                    </div>
-                  </div>
-                  <button onClick={() => {setActivePlanId(null); setIsSelectingLocation(null); setSelectedPinId(null); setIsRepositioningId(null);}} className="p-2 text-white/50 hover:text-white"><X size={28} /></button>
-                </div>
-
-                <div className="flex-1 relative overflow-auto bg-gray-900 flex items-center justify-center p-4">
-                  <div className="relative inline-block rounded-2xl overflow-hidden shadow-2xl border border-white/5">
-                    <img 
-                      src={plans.find(p => p.id === (activePlanId || isSelectingLocation))?.imageData} 
-                      className="max-w-full h-auto select-none object-contain block"
-                      onClick={(e) => {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const x = ((e.clientX - rect.left) / rect.width) * 100;
-                        const y = ((e.clientY - rect.top) / rect.height) * 100;
-                        
-                        if (isRepositioningId) {
-                          setObservations(observations.map(o => o.id === isRepositioningId ? { ...o, coords: { x, y } } : o));
-                          setIsRepositioningId(null);
-                          setSelectedPinId(isRepositioningId);
-                          notify("Pin Repositioned");
-                        } else if (isSelectingLocation && editingObs) {
-                          setEditingObs({...editingObs, planId: isSelectingLocation, coords: {x, y}});
-                          setIsSelectingLocation(null);
-                        } else {
-                          startNewObservation(activePlanId!, { x, y });
-                        }
-                      }}
-                    />
-                    {observations.filter(o => o.planId === (activePlanId || isSelectingLocation)).map(o => (
-                      <div 
-                        key={o.id}
-                        className={`absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white shadow-2xl transition-all cursor-pointer ${
-                          selectedPinId === o.id ? 'ring-4 ring-blue-400 scale-125 z-20' : 'z-10'
-                        } ${
-                          o.priority === 'Critical' ? 'bg-red-600' : o.priority === 'High' ? 'bg-orange-500' : 'bg-blue-600'
-                        }`}
-                        style={{ left: `${o.coords?.x}%`, top: `${o.coords?.y}%` }}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedPinId(o.id === selectedPinId ? null : o.id);
-                        }}
-                      >
-                        {observations.indexOf(o) + 1}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-
-                {selectedObservation && (
-                  <div className="absolute bottom-28 left-6 right-6 p-5 bg-white rounded-[32px] shadow-2xl animate-in slide-in-from-bottom duration-300 z-30">
-                    <div className="flex gap-4 items-start mb-4">
-                      <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
-                        selectedObservation.priority === 'Critical' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
-                      }`}>
-                        <AlertTriangle size={24} />
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <div className="flex justify-between items-start mb-1">
-                          <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">{selectedObservation.trade || 'General'}</span>
-                          <span className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-wider text-white ${
-                            selectedObservation.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'
-                          }`}>{selectedObservation.priority}</span>
-                        </div>
-                        <p className="text-xs font-bold text-gray-900 leading-tight line-clamp-2">{selectedObservation.note || "No description provided."}</p>
-                      </div>
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-2">
-                       <button onClick={() => {setEditingObs(selectedObservation); setView('editor'); setActivePlanId(null); setSelectedPinId(null);}} className="py-3 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl active:scale-95 transition flex items-center justify-center gap-2"><Edit3 size={14} /> Details</button>
-                       <button onClick={() => {setIsRepositioningId(selectedObservation.id); setSelectedPinId(null);}} className="py-3 bg-blue-50 text-blue-600 text-[10px] font-black uppercase rounded-xl active:scale-95 transition flex items-center justify-center gap-2"><Move size={14} /> Move Pin</button>
-                       <button onClick={() => {if(confirm("Delete this finding?")) { setObservations(observations.filter(o => o.id !== selectedObservation.id)); setSelectedPinId(null); notify("Finding Deleted"); }}} className="py-3 bg-red-50 text-red-600 text-[10px] font-black uppercase rounded-xl active:scale-95 transition flex items-center justify-center gap-2"><Trash2 size={14} /> Delete</button>
-                       <button onClick={() => setSelectedPinId(null)} className="py-3 bg-gray-100 text-gray-400 text-[10px] font-black uppercase rounded-xl active:scale-95 transition">Close</button>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
 
@@ -871,9 +805,14 @@ const App: React.FC = () => {
                   {isBulkSelectMode ? 'Cancel' : 'Select'}
                 </button>
                 {!isBulkSelectMode && (
-                  <button onClick={generateReport} className="p-3 bg-white text-blue-600 rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">
-                    {isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
-                  </button>
+                  <>
+                    <button onClick={() => startNewObservation()} className="p-3 bg-blue-600 text-white rounded-2xl shadow-sm border border-blue-600 active:scale-95 transition">
+                      <Plus size={20} />
+                    </button>
+                    <button onClick={generateReport} className="p-3 bg-white text-blue-600 rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">
+                      {isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}
+                    </button>
+                  </>
                 )}
               </div>
             } />
@@ -945,35 +884,70 @@ const App: React.FC = () => {
         )}
 
         {view === 'editor' && editingObs && (
-          <div className="fixed inset-0 z-[60] bg-gray-50 flex flex-col animate-in slide-in-from-bottom duration-500 overflow-hidden">
+          <div className={`fixed inset-0 z-[120] flex flex-col animate-in slide-in-from-bottom duration-500 overflow-hidden ${editorDarkMode ? 'bg-gray-950' : 'bg-gray-50'}`}>
             {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={(data) => { const newImages = [...editingObs.images]; newImages[isAnnotating.index] = data; setEditingObs({...editingObs, images: newImages}); setIsAnnotating(null); }} onCancel={() => setIsAnnotating(null)} />}
-            <header className="px-5 pt-8 pb-4 flex items-center justify-between bg-white border-b border-gray-100 shadow-sm">
-              <div className="flex items-center gap-4"><button onClick={() => setView('observations')} className="p-2 text-gray-400"><ArrowLeft size={24} /></button><h2 className="text-xl font-black tracking-tight">{editingObs.note ? 'Edit Finding' : 'New Finding'}</h2></div>
-              <button onClick={syncToCloud} className="px-6 py-2.5 bg-blue-600 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200 active:scale-95 transition">Save</button>
+            <header className={`px-5 pt-8 pb-4 flex items-center justify-between border-b shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
+              <div className="flex items-center gap-4">
+                <button onClick={() => setView('observations')} className={`p-2 ${editorDarkMode ? 'text-gray-400' : 'text-gray-400'}`}>
+                  <ArrowLeft size={24} />
+                </button>
+                <h2 className="text-xl font-black tracking-tight">{editingObs.note ? 'Edit Finding' : 'New Finding'}</h2>
+              </div>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => setEditorDarkMode(!editorDarkMode)} 
+                  className={`p-2.5 rounded-xl transition-all active:scale-95 ${editorDarkMode ? 'bg-gray-800 text-yellow-400 border border-gray-700' : 'bg-gray-100 text-gray-600 border border-gray-200'}`}
+                >
+                  {editorDarkMode ? <Sun size={20} /> : <Moon size={20} />}
+                </button>
+                <button onClick={syncToCloud} className="px-6 py-2.5 bg-blue-600 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200 active:scale-95 transition">Save</button>
+              </div>
             </header>
             <main className="flex-1 overflow-y-auto p-5 space-y-6 pb-32">
               <section className="space-y-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Pin on Floor Plan</label>
+                <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Pin on Floor Plan</label>
                 {editingObs.planId ? (
-                   <div className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-3xl shadow-sm">
+                   <div className={`flex flex-col gap-3 p-4 border rounded-3xl shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
                       <div className="flex items-center gap-4 min-w-0">
-                        <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl shrink-0"><MapPinIcon size={20} /></div>
-                        <div className="min-w-0">
+                        <div className={`p-3 rounded-2xl shrink-0 ${editorDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}><MapPinned size={20} /></div>
+                        <div className="min-w-0 flex-1">
                           <p className="text-xs font-black uppercase truncate">{plans.find(p => p.id === editingObs.planId)?.name}</p>
-                          <p className="text-[10px] font-bold text-gray-400">Dropped Pin on Reference Map</p>
+                          <p className={`text-[10px] font-bold ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Location pinned on map</p>
                         </div>
                       </div>
-                      <button onClick={() => setIsSelectingLocation(editingObs.planId)} className="text-blue-500 font-black text-[10px] uppercase shrink-0 px-2 py-1 active:bg-blue-50 rounded-lg">Change Pin</button>
+                      <div className="grid grid-cols-2 gap-2 mt-1">
+                        <button 
+                          onClick={() => setIsSelectingLocation(editingObs.planId)} 
+                          className="flex items-center justify-center gap-2 py-3 bg-blue-600 text-white rounded-xl text-[10px] font-black uppercase shadow-lg shadow-blue-500/20 active:scale-95 transition"
+                        >
+                          <Move size={14} /> Move Pin
+                        </button>
+                        <button 
+                          onClick={() => setEditingObs({...editingObs, planId: null, coords: null})} 
+                          className={`flex items-center justify-center gap-2 py-3 rounded-xl text-[10px] font-black uppercase active:scale-95 transition ${editorDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'}`}
+                        >
+                          <X size={14} /> Change Plan
+                        </button>
+                      </div>
                    </div>
                 ) : (
-                  <div className="grid grid-cols-1 gap-2">
+                  <div className="space-y-3">
                     {plans.length === 0 ? (
-                      <p className="text-[10px] font-bold text-gray-400 italic">No floor plans uploaded. Enable map pinning in "Plans" tab.</p>
+                      <p className={`text-[10px] font-bold italic p-5 rounded-3xl border-2 border-dashed ${editorDarkMode ? 'text-gray-500 bg-gray-900 border-gray-800' : 'text-gray-400 bg-gray-100 border-gray-200'}`}>No floor plans available. Please upload floor plans in the "Plans" tab from the home dashboard.</p>
                     ) : (
-                      <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
-                        {plans.map(p => (
-                          <button key={p.id} onClick={() => setIsSelectingLocation(p.id)} className="flex shrink-0 items-center gap-3 px-4 py-3 bg-white border border-gray-100 rounded-2xl text-[10px] font-black uppercase text-gray-600 shadow-sm active:scale-95 transition text-gray-900"><Plus size={14} className="text-blue-500" /> {p.name}</button>
-                        ))}
+                      <div className="grid grid-cols-1 gap-2">
+                        <p className={`text-[10px] font-bold mb-1 ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Select a plan to drop a pin:</p>
+                        <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+                          {plans.map(p => (
+                            <button 
+                              key={p.id} 
+                              onClick={() => setIsSelectingLocation(p.id)} 
+                              className={`flex shrink-0 items-center gap-3 px-5 py-4 border rounded-full text-[10px] font-black uppercase shadow-sm active:scale-95 transition ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-gray-300 hover:bg-gray-800' : 'bg-gray-100 border-transparent text-gray-900 hover:bg-gray-200'}`}
+                            >
+                              <Plus size={16} className="text-blue-500" /> {p.name}
+                            </button>
+                          ))}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -982,52 +956,89 @@ const App: React.FC = () => {
 
               <section className="space-y-3 relative">
                 <div className="flex justify-between items-end">
-                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Issue Description</label>
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Issue Description</label>
                   <div className="flex gap-2">
                     {editingObs.note && !sharedComments.includes(editingObs.note) && (
-                      <button onClick={() => addToLibrary(editingObs.note)} className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase active:scale-95 transition"><BookmarkPlus size={12} /> Add to Library</button>
+                      <button onClick={() => addToLibrary(editingObs.note)} className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase active:scale-95 transition ${editorDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}><BookmarkPlus size={12} /> Add to Library</button>
                     )}
                     <button onClick={() => setShowCommentDropdown(!showCommentDropdown)} className="flex items-center gap-1.5 px-3 py-1 bg-gray-900 text-white rounded-lg text-[10px] font-black uppercase active:scale-95 transition shadow-lg"><Sparkles size={12} className="text-blue-400" /> Templates <ChevronDown size={10} className={`transition-transform duration-300 ${showCommentDropdown ? 'rotate-180' : ''}`} /></button>
                   </div>
                 </div>
 
                 {showCommentDropdown && (
-                  <div className="absolute top-10 right-0 left-0 z-[70] bg-white border border-gray-200 rounded-[28px] shadow-2xl max-h-64 overflow-y-auto no-scrollbar animate-in zoom-in duration-200 border-2 border-blue-500/20">
-                    <div className="p-4 border-b border-gray-100 sticky top-0 bg-white/95 backdrop-blur-md flex justify-between items-center"><span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Global Comment Library</span><button onClick={() => setShowCommentDropdown(false)}><X size={16} className="text-gray-300" /></button></div>
-                    {sharedComments.length === 0 ? (<div className="p-8 text-center text-gray-400 text-xs italic">Library is empty. Add templates in Settings!</div>) : (
-                      <div className="divide-y divide-gray-50">{sharedComments.map((comment, i) => (<button key={i} onClick={() => useComment(comment)} className="w-full text-left p-5 text-sm font-semibold text-gray-700 hover:bg-blue-50 active:bg-blue-100 transition">{comment}</button>))}</div>
+                  <div className={`absolute top-10 right-0 left-0 z-[130] border rounded-[28px] shadow-2xl max-h-64 overflow-y-auto no-scrollbar animate-in zoom-in duration-200 ${editorDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}>
+                    <div className={`p-4 border-b sticky top-0 backdrop-blur-md flex justify-between items-center ${editorDarkMode ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-100'}`}>
+                      <span className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Global Comment Library</span>
+                      <button onClick={() => setShowCommentDropdown(false)}><X size={16} className="text-gray-300" /></button>
+                    </div>
+                    {sharedComments.length === 0 ? (<div className={`p-8 text-center text-xs italic ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Library is empty. Add templates in Settings!</div>) : (
+                      <div className={`divide-y ${editorDarkMode ? 'divide-gray-800' : 'divide-gray-50'}`}>
+                        {sharedComments.map((comment, i) => (
+                          <button key={i} onClick={() => useComment(comment)} className={`w-full text-left p-5 text-sm font-semibold transition ${editorDarkMode ? 'text-gray-300 hover:bg-gray-800 active:bg-gray-700' : 'text-gray-700 hover:bg-blue-50 active:bg-blue-100'}`}>{comment}</button>
+                        ))}
+                      </div>
                     )}
                   </div>
                 )}
 
-                <textarea value={editingObs.note} onChange={e => setEditingObs({...editingObs, note: e.target.value})} placeholder="Describe the problem here or choose a template..." className="w-full h-40 p-5 rounded-3xl border-2 border-gray-100 focus:border-blue-500 outline-none font-semibold text-sm shadow-inner resize-none bg-white text-gray-900" />
+                <textarea 
+                  value={editingObs.note} 
+                  onChange={e => setEditingObs({...editingObs, note: e.target.value})} 
+                  placeholder="Describe the problem here or choose a template..." 
+                  className={`w-full h-40 p-5 rounded-3xl border-2 outline-none font-semibold text-sm shadow-inner resize-none transition-colors ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:border-blue-700' : 'bg-white border-gray-100 text-gray-900 focus:border-blue-500'}`} 
+                />
               </section>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Trade</label>
-                  <input value={editingObs.trade} onChange={e => setEditingObs({...editingObs, trade: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none focus:ring-2 ring-blue-500/10 shadow-sm text-gray-900" placeholder="e.g. Drywall, Electrical" />
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Trade</label>
+                  <input 
+                    value={editingObs.trade} 
+                    onChange={e => setEditingObs({...editingObs, trade: e.target.value})} 
+                    className={`w-full p-4 border rounded-2xl text-xs font-bold outline-none shadow-sm transition-colors ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:ring-2 ring-blue-900/20' : 'bg-white border-gray-100 text-gray-900 focus:ring-2 ring-blue-500/10'}`} 
+                    placeholder="e.g. Drywall, Electrical" 
+                  />
                 </div>
                 <div className="space-y-2">
-                  <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Responsible Party</label>
-                  <input value={editingObs.responsibleParty} onChange={e => setEditingObs({...editingObs, responsibleParty: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none focus:ring-2 ring-blue-500/10 shadow-sm text-gray-900" placeholder="e.g. ABC Painting" />
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Responsible Party</label>
+                  <input 
+                    value={editingObs.responsibleParty} 
+                    onChange={e => setEditingObs({...editingObs, responsibleParty: e.target.value})} 
+                    className={`w-full p-4 border rounded-2xl text-xs font-bold outline-none shadow-sm transition-colors ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:ring-2 ring-blue-900/20' : 'bg-white border-gray-100 text-gray-900 focus:ring-2 ring-blue-500/10'}`} 
+                    placeholder="e.g. ABC Painting" 
+                  />
                 </div>
               </div>
 
               <section className="space-y-3">
-                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Urgency Level</label>
+                <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Urgency Level</label>
                 <div className="grid grid-cols-4 gap-2">
                   {(['Low', 'Medium', 'High', 'Critical'] as Priority[]).map(p => (
-                    <button key={p} onClick={() => setEditingObs({...editingObs, priority: p})} className={`py-3 rounded-2xl text-[9px] font-black uppercase tracking-tighter border-2 transition-all ${editingObs.priority === p ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-white border-gray-100 text-gray-400 active:scale-95'}`}>{p}</button>
+                    <button 
+                      key={p} 
+                      onClick={() => setEditingObs({...editingObs, priority: p})} 
+                      className={`py-3 rounded-2xl text-[9px] font-black uppercase tracking-tighter border-2 transition-all ${
+                        editingObs.priority === p 
+                          ? 'bg-blue-600 border-blue-600 text-white shadow-lg' 
+                          : editorDarkMode 
+                            ? 'bg-gray-900 border-gray-800 text-gray-500 active:scale-95' 
+                            : 'bg-white border-gray-100 text-gray-400 active:scale-95'
+                      }`}
+                    >
+                      {p}
+                    </button>
                   ))}
                 </div>
               </section>
 
               <section className="space-y-3">
-                <div className="flex justify-between items-center"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Evidence Photos</label><span className="text-[10px] font-bold text-blue-500">{editingObs.images.length}/5</span></div>
+                <div className="flex justify-between items-center">
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Evidence Photos</label>
+                  <span className="text-[10px] font-bold text-blue-500">{editingObs.images.length}/5</span>
+                </div>
                 <div className="grid grid-cols-3 gap-3">
                   {editingObs.images.map((img, i) => (
-                    <div key={i} className="group relative aspect-square rounded-[24px] overflow-hidden border border-gray-100 bg-gray-50 shadow-sm">
+                    <div key={i} className={`group relative aspect-square rounded-[24px] overflow-hidden border shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
                       <img src={img} className="w-full h-full object-contain" />
                       <div className="absolute inset-0 bg-black/60 flex items-center justify-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button onClick={() => setIsAnnotating({index: i, data: img})} className="p-2.5 bg-white text-blue-600 rounded-xl active:scale-95 transition"><Edit3 size={16} /></button>
@@ -1036,7 +1047,7 @@ const App: React.FC = () => {
                     </div>
                   ))}
                   {editingObs.images.length < 5 && (
-                    <label className="flex flex-col items-center justify-center gap-2 aspect-square bg-white border-2 border-dashed border-gray-200 rounded-[24px] text-gray-400 cursor-pointer shadow-sm hover:border-blue-300 transition-colors active:scale-95">
+                    <label className={`flex flex-col items-center justify-center gap-2 aspect-square border-2 border-dashed rounded-[24px] cursor-pointer shadow-sm transition-all active:scale-95 ${editorDarkMode ? 'bg-gray-900 border-gray-700 text-gray-600 hover:border-blue-800' : 'bg-white border-gray-200 text-gray-400 hover:border-blue-300'}`}>
                       <Camera size={24} /><span className="text-[8px] font-black uppercase tracking-widest">Capture</span><input type="file" accept="image/*" capture="environment" multiple onChange={(e) => { const files = Array.from(e.target.files || []); files.forEach(file => { const reader = new FileReader(); reader.onloadend = () => setEditingObs(prev => prev ? ({ ...prev, images: [...prev.images, reader.result as string] }) : null); reader.readAsDataURL(file); }); }} className="hidden" />
                     </label>
                   )}
@@ -1047,7 +1058,7 @@ const App: React.FC = () => {
         )}
 
         {view === 'manageTemplates' && (
-          <div className="animate-in slide-in-from-bottom duration-300 min-h-screen bg-white z-[70] fixed inset-0 flex flex-col">
+          <div className="animate-in slide-in-from-bottom duration-300 min-h-screen bg-white z-[200] fixed inset-0 flex flex-col">
              <Header title="Manage Library" showBack onBack={() => setView('settings')} />
              <div className="flex-1 overflow-y-auto p-5 space-y-6 pb-24">
                 <div className="space-y-2">
@@ -1078,9 +1089,9 @@ const App: React.FC = () => {
             <Header title="Project Settings" showBack />
             <div className="p-5 space-y-6">
                <div className="space-y-4">
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Inspection Name</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><LayoutDashboard className="text-blue-500 mr-4 shrink-0" size={20} /><input value={project.name} onChange={e => setProject({...project, name: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-transparent text-gray-900" /></div></div>
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPinIcon className="text-red-500 mr-4 shrink-0" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-transparent text-gray-900" /></div></div>
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Lead Inspector</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><User className="text-purple-500 mr-4 shrink-0" size={20} /><input value={project.inspector} onChange={e => setProject({...project, inspector: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-transparent text-gray-900" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Inspection Name</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><LayoutDashboard className="text-blue-500 mr-4 shrink-0" size={20} /><input value={project.name} onChange={e => setProject({...project, name: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-white text-gray-900" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPinIcon className="text-red-500 mr-4 shrink-0" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-white text-gray-900" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Lead Inspector</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><User className="text-purple-500 mr-4 shrink-0" size={20} /><input value={project.inspector} onChange={e => setProject({...project, inspector: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-white text-gray-900" /></div></div>
                </div>
                <div className="space-y-3 pt-6 border-t border-gray-100">
                   <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Global Resources</p>
@@ -1095,8 +1106,119 @@ const App: React.FC = () => {
         )}
       </div>
 
-      {!isBulkSelectMode && view !== 'editor' && !isSelectingLocation && view !== 'manageTemplates' && (
-        <nav className="fixed bottom-6 left-6 right-6 h-20 bg-gray-900/90 backdrop-blur-2xl rounded-[40px] flex items-center justify-around px-6 shadow-2xl z-40 border border-white/10 ring-1 ring-white/10">
+      {(activePlanId || isSelectingLocation) && (
+        <div className="fixed inset-0 z-[150] bg-black flex flex-col animate-in zoom-in duration-300">
+          <div className="p-6 flex justify-between items-center bg-black/80 backdrop-blur-xl">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-white/10 rounded-xl"><MapIcon size={18} className="text-blue-400" /></div>
+              <div className="min-w-0 pr-4">
+                <h3 className="text-white font-black uppercase text-xs tracking-widest truncate">{plans.find(p => p.id === (activePlanId || isSelectingLocation))?.name}</h3>
+                <p className="text-[9px] text-white/50 font-bold uppercase tracking-tighter">
+                  {isRepositioningId ? 'Select new position for finding' : 'Tap exactly where you found the issue'}
+                </p>
+              </div>
+            </div>
+            <button onClick={() => {setActivePlanId(null); setIsSelectingLocation(null); setSelectedPinId(null); setIsRepositioningId(null);}} className="p-2 text-white/50 hover:text-white"><X size={28} /></button>
+          </div>
+
+          <div className="flex-1 relative overflow-auto bg-gray-900 flex items-center justify-center p-4">
+            <div className="relative inline-block rounded-2xl overflow-hidden shadow-2xl border border-white/5">
+              <img 
+                src={plans.find(p => p.id === (activePlanId || isSelectingLocation))?.imageData} 
+                className="max-w-full h-auto select-none object-contain block"
+                onClick={(e) => {
+                  const rect = e.currentTarget.getBoundingClientRect();
+                  const x = ((e.clientX - rect.left) / rect.width) * 100;
+                  const y = ((e.clientY - rect.top) / rect.height) * 100;
+                  
+                  if (isRepositioningId) {
+                    setObservations(observations.map(o => o.id === isRepositioningId ? { ...o, coords: { x, y } } : o));
+                    setIsRepositioningId(null);
+                    setSelectedPinId(isRepositioningId);
+                    notify("Pin Repositioned");
+                  } else if (isSelectingLocation && editingObs) {
+                    setEditingObs({...editingObs, planId: isSelectingLocation, coords: {x, y}});
+                    setIsSelectingLocation(null);
+                  } else {
+                    startNewObservation(activePlanId!, { x, y });
+                  }
+                }}
+              />
+              {observations.filter(o => o.planId === (activePlanId || isSelectingLocation)).map(o => {
+                const isCurrentlyEditingThis = editingObs?.id === o.id;
+                return (
+                  <div 
+                    key={o.id}
+                    className={`absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white shadow-2xl transition-all cursor-pointer ${
+                      (selectedPinId === o.id || isCurrentlyEditingThis) ? 'ring-4 ring-blue-400 scale-125 z-20' : 'z-10'
+                    } ${
+                      isCurrentlyEditingThis ? 'animate-pulse' : ''
+                    } ${
+                      o.priority === 'Critical' ? 'bg-red-600' : o.priority === 'High' ? 'bg-orange-500' : 'bg-blue-600'
+                    }`}
+                    style={{ left: `${o.coords?.x}%`, top: `${o.coords?.y}%` }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setSelectedPinId(o.id === selectedPinId ? null : o.id);
+                    }}
+                  >
+                    {observations.indexOf(o) + 1}
+                  </div>
+                );
+              })}
+              
+              {isSelectingLocation && editingObs?.coords && editingObs.planId === isSelectingLocation && (
+                <div 
+                  className="absolute w-10 h-10 -ml-5 -mt-5 rounded-full border-4 border-white bg-blue-600 flex items-center justify-center text-[10px] font-black text-white shadow-2xl z-30 animate-pulse ring-4 ring-blue-400/50"
+                  style={{ left: `${editingObs.coords.x}%`, top: `${editingObs.coords.y}%` }}
+                >
+                    <MapPinned size={20} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {selectedObservation && (
+            <div className="absolute bottom-28 left-6 right-6 p-6 bg-white rounded-[32px] shadow-2xl animate-in slide-in-from-bottom duration-300 z-[110] border border-gray-100">
+              <div className="flex gap-4 items-center mb-5">
+                {selectedObservation.images.length > 0 ? (
+                  <div className="w-20 h-20 rounded-2xl overflow-hidden shrink-0 border border-gray-100 shadow-sm bg-gray-50">
+                    <img src={selectedObservation.images[0]} className="w-full h-full object-cover" />
+                  </div>
+                ) : (
+                  <div className={`w-20 h-20 rounded-2xl flex items-center justify-center shrink-0 border border-gray-50 ${
+                    selectedObservation.priority === 'Critical' ? 'bg-red-50 text-red-500' : 'bg-blue-50 text-blue-500'
+                  }`}>
+                    <AlertTriangle size={32} />
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <div className="flex justify-between items-start mb-1">
+                    <span className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-wider text-white ${
+                      selectedObservation.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'
+                    }`}>{selectedObservation.priority}</span>
+                    <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">{selectedObservation.trade || 'General'}</span>
+                  </div>
+                  <p className="text-sm font-black text-gray-900 leading-tight mb-1 line-clamp-2">{selectedObservation.note || "No description provided."}</p>
+                  <div className="flex items-center gap-2 text-[10px] font-bold text-gray-400 truncate uppercase tracking-tighter">
+                    <User size={10} className="text-blue-500" /> {selectedObservation.responsibleParty || 'Not assigned'}
+                  </div>
+                </div>
+              </div>
+              
+              <div className="grid grid-cols-3 gap-2">
+                  <button onClick={() => {setEditingObs(selectedObservation); setView('editor'); setActivePlanId(null); setSelectedPinId(null);}} className="py-4 bg-gray-900 text-white text-[10px] font-black uppercase rounded-2xl active:scale-95 transition flex items-center justify-center gap-2 shadow-lg"><Edit3 size={14} /> Edit</button>
+                  <button onClick={() => {setIsRepositioningId(selectedObservation.id); setSelectedPinId(null);}} className="py-4 bg-blue-50 text-blue-600 text-[10px] font-black uppercase rounded-2xl active:scale-95 transition flex items-center justify-center gap-2"><Move size={14} /> Move</button>
+                  <button onClick={() => {if(confirm("Permanently delete this finding?")) { setObservations(observations.filter(o => o.id !== selectedObservation.id)); setSelectedPinId(null); notify("Finding Deleted"); }}} className="py-4 bg-red-50 text-red-600 text-[10px] font-black uppercase rounded-2xl active:scale-95 transition flex items-center justify-center gap-2"><Trash2 size={14} /> Delete</button>
+              </div>
+              <button onClick={() => setSelectedPinId(null)} className="w-full mt-3 py-2 text-gray-300 text-[9px] font-black uppercase tracking-widest active:text-gray-400">Dismiss View</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {!isBulkSelectMode && view !== 'editor' && !isSelectingLocation && view !== 'manageTemplates' && !activePlanId && (
+        <nav className="fixed bottom-6 left-6 right-6 h-20 bg-gray-900/90 backdrop-blur-2xl rounded-[40px] flex items-center justify-around px-6 shadow-2xl z-[90] border border-white/10 ring-1 ring-white/10">
           <NavItem icon={LayoutDashboard} label="Home" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
           <NavItem icon={MapIcon} label="Plans" active={view === 'plans'} onClick={() => setView('plans')} />
           <div className="relative h-20 flex items-center justify-center"><button onClick={() => startNewObservation()} className="w-16 h-16 bg-blue-600 text-white rounded-full flex items-center justify-center shadow-xl shadow-blue-500/40 border-4 border-gray-900/50 -mt-16 transition-transform active:scale-110 active:-translate-y-1"><Plus size={32} strokeWidth={3} /></button></div>
