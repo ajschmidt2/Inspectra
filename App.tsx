@@ -1,10 +1,12 @@
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Camera, Map as MapIcon, ClipboardList, Send, Plus, Trash2, 
   ChevronRight, ArrowLeft, Edit3, Search, CloudSun, AlertTriangle,
   LayoutDashboard, Download, CheckCircle2, Settings, X, 
   Info, Bell, MapPin, Calendar, User, Save, FileText, Upload, Loader2,
-  Maximize2, Eye, FolderOpen, LogOut, PlusCircle, Database, BookmarkPlus, Sparkles
+  Maximize2, Eye, FolderOpen, LogOut, PlusCircle, Database, BookmarkPlus, Sparkles,
+  Map as MapPinIcon
 } from 'lucide-react';
 import { 
   Priority, Coordinates, Observation, FloorPlan, ProjectInfo, ProjectMeta, WeatherData 
@@ -55,8 +57,8 @@ const App: React.FC = () => {
   // --- UI State ---
   const [view, setView] = useState<'projectBrowser' | 'dashboard' | 'plans' | 'observations' | 'editor' | 'settings'>('projectBrowser');
   const [editingObs, setEditingObs] = useState<Observation | null>(null);
-  const [hasDraft, setHasDraft] = useState<boolean>(false);
   const [activePlanId, setActivePlanId] = useState<string | null>(null);
+  const [isSelectingLocation, setIsSelectingLocation] = useState<string | null>(null); // Plan ID being used for location selection
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
@@ -65,7 +67,7 @@ const App: React.FC = () => {
   const [showToast, setShowToast] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Fix: Defined filteredObservations to resolve the reference error and enable search functionality
+  // Defined filteredObservations to enable search functionality
   const filteredObservations = useMemo(() => {
     return observations.filter(obs => {
       const query = searchQuery.toLowerCase();
@@ -80,12 +82,10 @@ const App: React.FC = () => {
 
   // --- Persistence Logic ---
   
-  // Save Shared Comments (Global)
   useEffect(() => {
     localStorage.setItem('site_shared_comments', JSON.stringify(sharedComments));
   }, [sharedComments]);
 
-  // 1. Load active project data when activeProjectId changes
   useEffect(() => {
     if (activeProjectId) {
       const savedInfo = localStorage.getItem(`site_project_${activeProjectId}_info`);
@@ -110,7 +110,6 @@ const App: React.FC = () => {
     }
   }, [activeProjectId]);
 
-  // 2. Save active project data whenever it changes
   useEffect(() => {
     if (activeProjectId && project) {
       localStorage.setItem(`site_project_${activeProjectId}_info`, JSON.stringify(project));
@@ -152,6 +151,50 @@ const App: React.FC = () => {
     setEditingObs({ ...editingObs, note: newNote });
   };
 
+  const renderPlanWithPins = (plan: FloorPlan, planObs: Observation[]): Promise<string> => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+      img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx?.drawImage(img, 0, 0);
+
+        planObs.forEach((obs) => {
+          if (!obs.coords) return;
+          const px = (obs.coords.x / 100) * canvas.width;
+          const py = (obs.coords.y / 100) * canvas.height;
+          const pinBaseSize = Math.max(canvas.width, canvas.height) * 0.015;
+          const color = obs.priority === 'Critical' ? '#dc2626' : obs.priority === 'High' ? '#f97316' : '#2563eb';
+          
+          // Draw Glow
+          ctx!.beginPath();
+          ctx!.arc(px, py, pinBaseSize * 1.5, 0, Math.PI * 2);
+          ctx!.fillStyle = `${color}33`;
+          ctx!.fill();
+
+          ctx!.beginPath();
+          ctx!.arc(px, py, pinBaseSize, 0, Math.PI * 2);
+          ctx!.fillStyle = color;
+          ctx!.fill();
+          ctx!.strokeStyle = 'white';
+          ctx!.lineWidth = pinBaseSize * 0.2;
+          ctx!.stroke();
+          
+          ctx!.fillStyle = 'white';
+          ctx!.font = `bold ${pinBaseSize}px Inter, sans-serif`;
+          ctx!.textAlign = 'center';
+          ctx!.textBaseline = 'middle';
+          const index = observations.indexOf(obs) + 1;
+          ctx!.fillText(index.toString(), px, py);
+        });
+        resolve(canvas.toDataURL('image/jpeg', 0.85));
+      };
+      img.src = plan.imageData;
+    });
+  };
+
   const generateReport = async () => {
     if (!project || observations.length === 0) {
       notify("No observations to export");
@@ -185,11 +228,6 @@ const App: React.FC = () => {
       doc.text(`Inspector: ${project.inspector}`, 20, 64);
       doc.text(`Total Findings: ${observations.length}`, 20, 70);
 
-      if (weather) {
-        doc.text(`Weather: ${weather.temp}°F, ${weather.condition}`, 20, 76);
-        doc.text(`Humidity: ${weather.humidity}% | Wind: ${weather.wind} mph`, 20, 82);
-      }
-
       const tableData = observations.map((obs, index) => [
         index + 1,
         new Date(obs.timestamp).toLocaleDateString(),
@@ -200,7 +238,7 @@ const App: React.FC = () => {
       ]);
 
       (doc as any).autoTable({
-        startY: weather ? 92 : 80,
+        startY: 80,
         head: [['#', 'Date', 'Priority', 'Trade', 'Description', 'Responsible']],
         body: tableData,
         headStyles: { fillColor: [37, 99, 235], textColor: [255, 255, 255], fontStyle: 'bold' },
@@ -209,6 +247,7 @@ const App: React.FC = () => {
         columnStyles: { 4: { cellWidth: 50 } },
       });
 
+      // --- Floor Plan Maps Section ---
       for (const plan of plans) {
         const planObs = observations.filter(o => o.planId === plan.id);
         if (planObs.length === 0) continue;
@@ -216,7 +255,7 @@ const App: React.FC = () => {
         doc.addPage();
         doc.setFont("helvetica", "bold");
         doc.setFontSize(14);
-        doc.text(`PLAN MAP: ${plan.name.toUpperCase()}`, 105, 20, { align: "center" });
+        doc.text(`MAP REFERENCE: ${plan.name.toUpperCase()}`, 105, 20, { align: "center" });
 
         const mappedPlanImg = await renderPlanWithPins(plan, planObs);
         const imgProps = doc.getImageProperties(mappedPlanImg);
@@ -236,24 +275,26 @@ const App: React.FC = () => {
         doc.setFontSize(9);
         doc.setFont("helvetica", "normal");
         doc.setTextColor(150, 150, 150);
-        doc.text("Numbered pins correlate to the detailed documentation below.", 105, 30 + pdfHeight + 10, { align: "center" });
+        doc.text("Pins indicate location and match finding numbers in detailed section.", 105, 30 + pdfHeight + 10, { align: "center" });
       }
 
+      // --- Detailed Findings Section ---
       doc.addPage();
       doc.setTextColor(0, 0, 0);
       doc.setFont("helvetica", "bold");
       doc.setFontSize(16);
-      doc.text("DETAILED DOCUMENTATION", 20, 20);
+      doc.text("DETAILED FINDINGS", 20, 20);
 
       let currentY = 30;
       for (const obs of observations) {
-        if (currentY > 250) {
+        if (currentY > 240) {
           doc.addPage();
           currentY = 20;
         }
         doc.setDrawColor(230, 230, 230);
         doc.line(20, currentY, 190, currentY);
         currentY += 10;
+
         doc.setFontSize(12);
         doc.setFont("helvetica", "bold");
         doc.text(`Finding #${observations.indexOf(obs) + 1}`, 20, currentY);
@@ -261,12 +302,18 @@ const App: React.FC = () => {
         doc.setTextColor(priorityColor[0], priorityColor[1], priorityColor[2]);
         doc.text(obs.priority.toUpperCase(), 190, currentY, { align: 'right' });
         doc.setTextColor(0, 0, 0);
+
         currentY += 8;
-        doc.setFontSize(10);
+        doc.setFontSize(9);
+        doc.setFont("helvetica", "normal");
+        const planName = plans.find(p => p.id === obs.planId)?.name || "Unassigned";
+        doc.text(`Location: ${planName}`, 20, currentY);
+        currentY += 6;
         doc.setFont("helvetica", "bold");
-        doc.text(`Trade: ${obs.trade || 'General'}`, 20, currentY);
+        doc.text(`Trade: ${obs.trade || 'N/A'}`, 20, currentY);
         doc.text(`Responsible: ${obs.responsibleParty || 'N/A'}`, 190, currentY, { align: 'right' });
         currentY += 8;
+
         doc.setFont("helvetica", "normal");
         doc.setFontSize(10);
         const splitNote = doc.splitTextToSize(`Description: ${obs.note}`, 170);
@@ -274,12 +321,9 @@ const App: React.FC = () => {
         currentY += (splitNote.length * 5) + 10;
 
         if (obs.images.length > 0) {
-          const maxImgHeight = 55;
-          const labelHeight = 8;
-          const spacing = 5;
+          const maxImgHeight = 50;
           let currentX = 20;
-
-          obs.images.forEach((imgData, imgIdx) => {
+          for (const [imgIdx, imgData] of obs.images.entries()) {
             const imgProps = doc.getImageProperties(imgData);
             let pdfHeight = maxImgHeight;
             let pdfWidth = (imgProps.width * pdfHeight) / imgProps.height;
@@ -287,29 +331,21 @@ const App: React.FC = () => {
               pdfWidth = 80;
               pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
             }
-            if (currentY + pdfHeight + labelHeight > 280) {
+            if (currentY + pdfHeight + 10 > 280) {
               doc.addPage();
               currentY = 20;
               currentX = 20;
             }
             if (currentX + pdfWidth > 190) {
               currentX = 20;
-              currentY += maxImgHeight + labelHeight + spacing;
-              if (currentY + pdfHeight + labelHeight > 280) {
-                doc.addPage();
-                currentY = 20;
-              }
+              currentY += maxImgHeight + 10;
             }
-            try { 
-              doc.addImage(imgData, 'JPEG', currentX, currentY, pdfWidth, pdfHeight); 
-              doc.setFontSize(8);
-              doc.setTextColor(120, 120, 120);
-              doc.text(`Photo ${imgIdx + 1}`, currentX + (pdfWidth / 2), currentY + pdfHeight + 4, { align: 'center' });
-              doc.setTextColor(0, 0, 0);
-            } catch (e) {}
-            currentX += pdfWidth + spacing;
-          });
-          currentY += maxImgHeight + labelHeight + 15;
+            doc.addImage(imgData, 'JPEG', currentX, currentY, pdfWidth, pdfHeight);
+            doc.setFontSize(8);
+            doc.text(`Photo ${imgIdx + 1}`, currentX + (pdfWidth / 2), currentY + pdfHeight + 4, { align: 'center' });
+            currentX += pdfWidth + 5;
+          }
+          currentY += maxImgHeight + 20;
         } else {
           currentY += 5;
         }
@@ -318,7 +354,7 @@ const App: React.FC = () => {
       doc.save(`${project.name.replace(/\s+/g, '_')}_SiteReport.pdf`);
       notify("Report Generated Successfully");
     } catch (err) {
-      setIsExporting(false);
+      notify("Export failed");
     } finally {
       setIsExporting(false);
     }
@@ -359,44 +395,8 @@ const App: React.FC = () => {
     }
   };
 
-  const renderPlanWithPins = (plan: FloorPlan, planObs: Observation[]): Promise<string> => {
-    return new Promise((resolve) => {
-      const canvas = document.createElement('canvas');
-      const ctx = canvas.getContext('2d');
-      const img = new Image();
-      img.onload = () => {
-        canvas.width = img.width;
-        canvas.height = img.height;
-        ctx?.drawImage(img, 0, 0);
-
-        planObs.forEach((obs) => {
-          if (!obs.coords) return;
-          const px = (obs.coords.x / 100) * canvas.width;
-          const py = (obs.coords.y / 100) * canvas.height;
-          const pinBaseSize = Math.max(canvas.width, canvas.height) * 0.012;
-          const color = obs.priority === 'Critical' ? '#dc2626' : obs.priority === 'High' ? '#f97316' : '#2563eb';
-          ctx!.beginPath();
-          ctx!.arc(px, py, pinBaseSize, 0, Math.PI * 2);
-          ctx!.fillStyle = color;
-          ctx!.fill();
-          ctx!.strokeStyle = 'white';
-          ctx!.lineWidth = pinBaseSize * 0.2;
-          ctx!.stroke();
-          ctx!.fillStyle = 'white';
-          ctx!.font = `bold ${pinBaseSize}px Inter, sans-serif`;
-          ctx!.textAlign = 'center';
-          ctx!.textBaseline = 'middle';
-          const index = observations.indexOf(obs) + 1;
-          ctx!.fillText(index.toString(), px, py);
-        });
-        resolve(canvas.toDataURL('image/jpeg', 0.85));
-      };
-      img.src = plan.imageData;
-    });
-  };
-
   const startNewObservation = (planId?: string, coords?: Coordinates) => {
-    setEditingObs({
+    const newObs: Observation = {
       id: generateId(),
       note: '',
       priority: 'Medium',
@@ -408,8 +408,10 @@ const App: React.FC = () => {
       responsibleParty: '',
       recommendedAction: '',
       timestamp: Date.now()
-    });
+    };
+    setEditingObs(newObs);
     setView('editor');
+    setActivePlanId(null);
   };
 
   const syncToCloud = () => {
@@ -628,28 +630,134 @@ const App: React.FC = () => {
               {plans.map(plan => (
                 <div key={plan.id} onClick={() => setActivePlanId(plan.id)} className="bg-white p-3 rounded-[32px] border border-gray-100 shadow-sm group active:scale-95 transition relative">
                   <button onClick={(e) => { e.stopPropagation(); setPlans(plans.filter(p => p.id !== plan.id)); notify("Plan Deleted"); }} className="absolute -top-1 -right-1 p-2 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition z-10 shadow-lg"><X size={12} /></button>
-                  <div className="aspect-[4/3] rounded-2xl overflow-hidden bg-gray-50 mb-3 border border-gray-100 relative"><img src={plan.imageData} className="w-full h-full object-contain bg-gray-100" /></div>
-                  <div className="px-1 flex justify-between items-center"><p className="text-xs font-black truncate max-w-[80%] uppercase tracking-tight">{plan.name}</p></div>
+                  <div className="aspect-[4/3] rounded-2xl overflow-hidden bg-gray-50 mb-3 border border-gray-100 relative">
+                    <img src={plan.imageData} className="w-full h-full object-contain bg-gray-100" />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition"><Maximize2 className="text-white" /></div>
+                  </div>
+                  <div className="px-1 flex justify-between items-center"><p className="text-xs font-black truncate max-w-[80%] uppercase tracking-tight">{plan.name}</p><span className="text-[10px] font-black text-blue-500">{observations.filter(o => o.planId === plan.id).length}</span></div>
                 </div>
               ))}
             </div>
+
+            {(activePlanId || isSelectingLocation) && (
+              <div className="fixed inset-0 z-50 bg-black flex flex-col animate-in zoom-in duration-300">
+                <div className="p-6 flex justify-between items-center bg-black/60 backdrop-blur-xl">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-white/10 rounded-xl"><MapIcon size={18} className="text-blue-400" /></div>
+                    <div>
+                      <h3 className="text-white font-black uppercase text-xs tracking-widest">{plans.find(p => p.id === (activePlanId || isSelectingLocation))?.name}</h3>
+                      <p className="text-[9px] text-white/50 font-bold uppercase tracking-tighter">Tap to drop finding pin</p>
+                    </div>
+                  </div>
+                  <button onClick={() => {setActivePlanId(null); setIsSelectingLocation(null); setSelectedPinId(null);}} className="p-2 text-white/50 hover:text-white"><X size={28} /></button>
+                </div>
+
+                <div className="flex-1 relative overflow-auto bg-gray-900 flex items-center justify-center p-4">
+                  <div className="relative inline-block rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/10">
+                    <img 
+                      src={plans.find(p => p.id === (activePlanId || isSelectingLocation))?.imageData} 
+                      className="max-w-full h-auto select-none object-contain"
+                      onClick={(e) => {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const x = ((e.clientX - rect.left) / rect.width) * 100;
+                        const y = ((e.clientY - rect.top) / rect.height) * 100;
+                        if (isSelectingLocation && editingObs) {
+                          setEditingObs({...editingObs, planId: isSelectingLocation, coords: {x, y}});
+                          setIsSelectingLocation(null);
+                        } else {
+                          startNewObservation(activePlanId!, { x, y });
+                        }
+                      }}
+                    />
+                    {observations.filter(o => o.planId === (activePlanId || isSelectingLocation)).map(o => (
+                      <div 
+                        key={o.id}
+                        className={`absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-white flex items-center justify-center text-[10px] font-black text-white shadow-2xl transform transition-all hover:scale-125 ${
+                          selectedPinId === o.id ? 'ring-4 ring-white ring-offset-2 ring-offset-transparent scale-110' : ''
+                        } ${
+                          o.priority === 'Critical' ? 'bg-red-600' : o.priority === 'High' ? 'bg-orange-500' : 'bg-blue-600'
+                        }`}
+                        style={{ left: `${o.coords?.x}%`, top: `${o.coords?.y}%` }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setSelectedPinId(o.id === selectedPinId ? null : o.id);
+                        }}
+                      >
+                        {observations.indexOf(o) + 1}
+                      </div>
+                    ))}
+                    {/* Ghost pin for the one currently being edited in "Location Selection" mode */}
+                    {isSelectingLocation && editingObs?.coords && (
+                       <div 
+                        className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full border-2 border-dashed border-white bg-blue-500/50 flex items-center justify-center text-[10px] font-black text-white shadow-2xl animate-pulse"
+                        style={{ left: `${editingObs.coords.x}%`, top: `${editingObs.coords.y}%` }}
+                      >?</div>
+                    )}
+                  </div>
+                </div>
+
+                {selectedObservation && (
+                  <div className="absolute bottom-28 left-6 right-6 p-5 bg-white rounded-[32px] shadow-2xl animate-in slide-in-from-bottom duration-300 flex gap-4 items-start">
+                    <div className={`w-12 h-12 rounded-2xl flex items-center justify-center shrink-0 ${
+                      selectedObservation.priority === 'Critical' ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'
+                    }`}>
+                      <AlertTriangle size={24} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-start mb-1">
+                        <span className="text-[10px] font-black uppercase text-gray-400 tracking-widest">{selectedObservation.trade || 'General'}</span>
+                        <span className={`px-2 py-0.5 rounded-lg text-[8px] font-black uppercase tracking-wider text-white ${
+                          selectedObservation.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'
+                        }`}>{selectedObservation.priority}</span>
+                      </div>
+                      <p className="text-xs font-bold text-gray-900 leading-tight mb-3 line-clamp-2">{selectedObservation.note}</p>
+                      <div className="flex gap-2">
+                         <button 
+                           onClick={() => {setEditingObs(selectedObservation); setView('editor'); setActivePlanId(null); setSelectedPinId(null);}}
+                           className="flex-1 py-2 bg-gray-900 text-white text-[10px] font-black uppercase rounded-xl"
+                         >Edit Details</button>
+                         <button 
+                           onClick={() => setSelectedPinId(null)}
+                           className="px-4 py-2 bg-gray-100 text-gray-400 text-[10px] font-black uppercase rounded-xl"
+                         >Close</button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
         {view === 'observations' && (
           <div className="animate-in slide-in-from-right duration-300">
             <Header title="Findings" showBack rightAction={<button onClick={generateReport} className="p-3 bg-white text-blue-600 rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">{isExporting ? <Loader2 className="animate-spin" size={20} /> : <Download size={20} />}</button>} />
-            <div className="px-5 pb-4"><div className="relative group"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} /><input type="text" placeholder="Filter by trade, note, or party..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-white rounded-2xl border border-gray-100 shadow-sm text-sm font-medium outline-none" /></div></div>
+            <div className="px-5 pb-4"><div className="relative group"><Search className="absolute left-4 top-1/2 -translate-y-1/2 text-gray-400" size={18} /><input type="text" placeholder="Search by trade or note..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-12 pr-4 py-4 bg-white rounded-2xl border border-gray-100 shadow-sm text-sm font-medium outline-none" /></div></div>
             <div className="px-5 space-y-4">
-              {filteredObservations.map((obs, idx) => (
-                <div key={obs.id} onClick={() => { setEditingObs(obs); setView('editor'); }} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4 active:scale-[0.98] transition group">
-                  <div className="flex justify-between items-start">
-                    <div className="flex flex-wrap gap-2"><div className="w-6 h-6 bg-gray-900 text-white rounded-lg flex items-center justify-center text-[10px] font-black">{idx + 1}</div><span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider text-white ${obs.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'}`}>{obs.priority}</span></div>
-                    <button onClick={(e) => { e.stopPropagation(); setObservations(o => o.filter(x => x.id !== obs.id)); }} className="text-gray-200 hover:text-red-500"><Trash2 size={18} /></button>
-                  </div>
-                  <p className="text-sm font-semibold text-gray-800 leading-relaxed line-clamp-2">{obs.note}</p>
+              {filteredObservations.length === 0 ? (
+                <div className="py-20 flex flex-col items-center justify-center text-gray-300 opacity-50">
+                   <ClipboardList size={48} className="mb-4" />
+                   <p className="font-bold">No findings match search</p>
                 </div>
-              ))}
+              ) : (
+                filteredObservations.map((obs) => (
+                  <div key={obs.id} onClick={() => { setEditingObs(obs); setView('editor'); }} className="bg-white p-5 rounded-[32px] border border-gray-100 shadow-sm space-y-4 active:scale-[0.98] transition group">
+                    <div className="flex justify-between items-start">
+                      <div className="flex flex-wrap gap-2">
+                        <div className="w-6 h-6 bg-gray-900 text-white rounded-lg flex items-center justify-center text-[10px] font-black">{observations.indexOf(obs) + 1}</div>
+                        <span className={`px-2.5 py-1 rounded-lg text-[10px] font-black uppercase tracking-wider text-white ${obs.priority === 'Critical' ? 'bg-red-600' : 'bg-blue-600'}`}>{obs.priority}</span>
+                        {obs.planId && <span className="px-2.5 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase flex items-center gap-1"><MapPinIcon size={10} /> Plan</span>}
+                      </div>
+                      <button onClick={(e) => { e.stopPropagation(); setObservations(o => o.filter(x => x.id !== obs.id)); }} className="text-gray-200 hover:text-red-500"><Trash2 size={18} /></button>
+                    </div>
+                    <p className="text-sm font-semibold text-gray-800 leading-relaxed line-clamp-2">{obs.note || "No description provided"}</p>
+                    <div className="flex items-center justify-between pt-4 border-t border-gray-50 text-gray-400">
+                      <span className="text-[10px] font-black uppercase">{obs.trade || 'General'}</span>
+                      <span className="text-[10px] font-black uppercase">{new Date(obs.timestamp).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         )}
@@ -662,49 +770,78 @@ const App: React.FC = () => {
               <button onClick={syncToCloud} className="px-6 py-2.5 bg-blue-600 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200">Save</button>
             </header>
             <main className="flex-1 overflow-y-auto p-5 space-y-6 pb-32">
+              {/* Location Section */}
+              <section className="space-y-3">
+                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Pin Location</label>
+                {editingObs.planId ? (
+                   <div className="flex items-center justify-between p-4 bg-white border border-gray-100 rounded-3xl shadow-sm">
+                      <div className="flex items-center gap-4">
+                        <div className="p-3 bg-blue-50 text-blue-600 rounded-2xl"><MapPinIcon size={20} /></div>
+                        <div>
+                          <p className="text-xs font-black uppercase">{plans.find(p => p.id === editingObs.planId)?.name}</p>
+                          <p className="text-[10px] font-bold text-gray-400">Coordinates: {Math.round(editingObs.coords?.x || 0)}%, {Math.round(editingObs.coords?.y || 0)}%</p>
+                        </div>
+                      </div>
+                      <button onClick={() => setIsSelectingLocation(editingObs.planId)} className="text-blue-500 font-black text-[10px] uppercase">Re-pin</button>
+                   </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-2">
+                    {plans.length === 0 ? (
+                      <p className="text-[10px] font-bold text-gray-400 italic">No floor plans uploaded. Upload in "Plans" tab to enable pinning.</p>
+                    ) : (
+                      <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
+                        {plans.map(p => (
+                          <button 
+                            key={p.id}
+                            onClick={() => setIsSelectingLocation(p.id)}
+                            className="flex shrink-0 items-center gap-3 px-4 py-3 bg-white border border-gray-100 rounded-2xl text-[10px] font-black uppercase text-gray-600 shadow-sm active:scale-95 transition"
+                          >
+                            <Plus size={14} className="text-blue-500" /> {p.name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </section>
+
               <section className="space-y-3">
                 <div className="flex justify-between items-end">
                   <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Description</label>
                   {editingObs.note && !sharedComments.includes(editingObs.note) && (
-                    <button 
-                      onClick={() => addToLibrary(editingObs.note)}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase active:scale-95 transition"
-                    >
-                      <BookmarkPlus size={12} /> Save to Library
-                    </button>
+                    <button onClick={() => addToLibrary(editingObs.note)} className="flex items-center gap-1.5 px-3 py-1 bg-blue-50 text-blue-600 rounded-lg text-[10px] font-black uppercase active:scale-95 transition"><BookmarkPlus size={12} /> Save to Library</button>
                   )}
                 </div>
-
-                {/* Shared Comment Library Chips */}
                 <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
                   {sharedComments.map((comment, i) => (
                     <div key={i} className="flex shrink-0 items-center">
-                      <button 
-                        onClick={() => useComment(comment)}
-                        className="px-4 py-2 bg-white border border-gray-100 rounded-full text-[10px] font-bold text-gray-600 shadow-sm active:bg-blue-600 active:text-white transition whitespace-nowrap"
-                      >
-                        {comment.length > 25 ? comment.substring(0, 25) + '...' : comment}
-                      </button>
-                      <button 
-                        onClick={() => removeFromLibrary(comment)}
-                        className="ml-[-10px] p-1 bg-red-500 text-white rounded-full z-10 border-2 border-white active:scale-90 transition"
-                      >
-                        <X size={8} />
-                      </button>
+                      <button onClick={() => useComment(comment)} className="px-4 py-2 bg-white border border-gray-100 rounded-full text-[10px] font-bold text-gray-600 shadow-sm active:bg-blue-600 active:text-white transition whitespace-nowrap">{comment.length > 25 ? comment.substring(0, 25) + '...' : comment}</button>
+                      <button onClick={() => removeFromLibrary(comment)} className="ml-[-10px] p-1 bg-red-500 text-white rounded-full z-10 border-2 border-white active:scale-90 transition"><X size={8} /></button>
                     </div>
                   ))}
-                  <button className="px-4 py-2 bg-gray-900 text-white rounded-full text-[10px] font-black uppercase flex items-center gap-2 shrink-0 opacity-20">
-                    <Sparkles size={10} /> Library
-                  </button>
                 </div>
-
                 <textarea 
                   value={editingObs.note} 
                   onChange={e => setEditingObs({...editingObs, note: e.target.value})} 
-                  placeholder="Describe the issue or select from library above..."
+                  placeholder="Describe the issue..."
                   className="w-full h-40 p-5 rounded-3xl border-2 border-gray-100 focus:border-blue-500 outline-none font-semibold text-sm"
                 />
               </section>
+
+              <section className="space-y-3">
+                <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Assignment</label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-bold text-gray-400 ml-1">Trade</span>
+                    <input value={editingObs.trade} onChange={e => setEditingObs({...editingObs, trade: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none" placeholder="Electrical" />
+                  </div>
+                  <div className="space-y-1">
+                    <span className="text-[9px] font-bold text-gray-400 ml-1">Responsible Party</span>
+                    <input value={editingObs.responsibleParty} onChange={e => setEditingObs({...editingObs, responsibleParty: e.target.value})} className="w-full p-4 bg-white border border-gray-100 rounded-2xl text-xs font-bold outline-none" placeholder="Subcontractor" />
+                  </div>
+                </div>
+              </section>
+
               <section className="space-y-3">
                 <label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Urgency</label>
                 <div className="grid grid-cols-4 gap-2">
@@ -713,6 +850,7 @@ const App: React.FC = () => {
                   ))}
                 </div>
               </section>
+
               <section className="space-y-3">
                 <div className="flex justify-between items-center"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Photos</label><span className="text-[10px] font-bold text-blue-500">{editingObs.images.length}/5</span></div>
                 <div className="grid grid-cols-3 gap-3">
@@ -742,7 +880,7 @@ const App: React.FC = () => {
             <div className="p-5 space-y-6">
                <div className="space-y-4">
                   <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project Name</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><LayoutDashboard className="text-blue-500 mr-4" size={20} /><input value={project.name} onChange={e => setProject({...project, name: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
-                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPin className="text-red-500 mr-4" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
+                  <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPinIcon className="text-red-500 mr-4" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
                   <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Inspector</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><User className="text-purple-500 mr-4" size={20} /><input value={project.inspector} onChange={e => setProject({...project, inspector: e.target.value})} className="flex-1 text-sm font-bold outline-none" /></div></div>
                </div>
                <div className="space-y-3 pt-6 border-t border-gray-100">
@@ -754,7 +892,7 @@ const App: React.FC = () => {
         )}
       </div>
 
-      {view !== 'editor' && (
+      {view !== 'editor' && !isSelectingLocation && (
         <nav className="fixed bottom-6 left-6 right-6 h-20 bg-gray-900/90 backdrop-blur-2xl rounded-[40px] flex items-center justify-around px-6 shadow-2xl z-40 border border-white/10 ring-1 ring-white/10">
           <NavItem icon={LayoutDashboard} label="Home" active={view === 'dashboard'} onClick={() => setView('dashboard')} />
           <NavItem icon={MapIcon} label="Plans" active={view === 'plans'} onClick={() => setView('plans')} />
