@@ -246,25 +246,98 @@ const App: React.FC = () => {
     notify("Removed from Library");
   };
 
+  const compressDataUrl = (dataUrl: string, maxDimension: number, quality: number) => new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error('Image decode failed'));
+    img.onload = () => {
+      const scale = Math.min(1, maxDimension / Math.max(img.width, img.height));
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, Math.round(img.height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        reject(new Error('Canvas context not available'));
+        return;
+      }
+
+      context.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+
+  const optimizeImageFile = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = async () => {
+      try {
+        const optimizedData = await compressDataUrl(reader.result as string, 1600, 0.72);
+        resolve(optimizedData);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const optimizeObservationImages = async (images: string[], maxDimension: number, quality: number) => {
+    const optimized = await Promise.all(images.map((image) => compressDataUrl(image, maxDimension, quality)));
+    return optimized;
+  };
+
+  const persistProjectSnapshot = (nextObservations: Observation[]) => {
+    if (!activeProjectId || !project) return true;
+
+    try {
+      localStorage.setItem(`site_project_${activeProjectId}_info`, JSON.stringify(project));
+      localStorage.setItem(`site_project_${activeProjectId}_plans`, JSON.stringify(plans));
+      localStorage.setItem(`site_project_${activeProjectId}_obs`, JSON.stringify(nextObservations));
+      localStorage.setItem('site_active_project_id', activeProjectId);
+
+      const updatedList = projectList.map(p =>
+        p.id === activeProjectId
+          ? { ...p, name: project.name, location: project.location, findingCount: nextObservations.length, lastModified: Date.now() }
+          : p
+      );
+      setProjectList(updatedList);
+      localStorage.setItem('site_project_list', JSON.stringify(updatedList));
+      setHasUnsyncedChanges(true);
+      localStorage.setItem('site_has_unsynced_changes', 'true');
+      return true;
+    } catch (err) {
+      return false;
+    }
+  };
+
   const addImagesToObservation = async (files: File[]) => {
     if (files.length === 0) return;
 
-    const fileToDataUrl = (file: File) => new Promise<string>((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result as string);
-      reader.onerror = () => reject(reader.error);
-      reader.readAsDataURL(file);
-    });
-
     setIsProcessingImages(true);
     try {
-      const imageDataUrls = await Promise.all(files.map(fileToDataUrl));
+      const settled = await Promise.allSettled(files.map(optimizeImageFile));
+      const imageDataUrls = settled
+        .filter((result): result is PromiseFulfilledResult<string> => result.status === 'fulfilled')
+        .map(result => result.value);
+
+      if (imageDataUrls.length === 0) {
+        notify("Failed to process one or more photos.");
+        return;
+      }
+
       setEditingObs(prev => {
         if (!prev) return prev;
         const remainingSlots = Math.max(0, 5 - prev.images.length);
         const imagesToAdd = imageDataUrls.slice(0, remainingSlots);
         return { ...prev, images: [...prev.images, ...imagesToAdd] };
       });
+
+      if (settled.some(result => result.status === 'rejected')) {
+        notify("Some photos could not be processed and were skipped.");
+      }
     } catch (err) {
       notify("Failed to process one or more photos.");
     } finally {
@@ -552,16 +625,46 @@ const App: React.FC = () => {
     setActivePlanId(null);
   };
 
-  const syncToCloud = () => {
+  const syncToCloud = async () => {
     if (!editingObs) return;
     if (isProcessingImages) {
       notify("Please wait for photos to finish loading before saving.");
       return;
     }
-    setObservations(prev => {
-      const exists = prev.some(o => o.id === editingObs.id);
-      return exists ? prev.map(o => o.id === editingObs.id ? editingObs : o) : [editingObs, ...prev];
-    });
+
+    const saveObservation = (observationToSave: Observation) => {
+      const exists = observations.some(o => o.id === observationToSave.id);
+      return exists
+        ? observations.map(o => o.id === observationToSave.id ? observationToSave : o)
+        : [observationToSave, ...observations];
+    };
+
+    let observationToSave = editingObs;
+    let nextObservations = saveObservation(observationToSave);
+
+    if (!persistProjectSnapshot(nextObservations)) {
+      if (observationToSave.images.length > 0) {
+        notify("Optimizing photos further for saving...");
+        try {
+          const aggressivelyOptimizedImages = await optimizeObservationImages(observationToSave.images, 1200, 0.55);
+          observationToSave = { ...observationToSave, images: aggressivelyOptimizedImages };
+          nextObservations = saveObservation(observationToSave);
+        } catch (err) {
+          notify("Could not optimize photos for saving.");
+          return;
+        }
+
+        if (!persistProjectSnapshot(nextObservations)) {
+          notify("Save failed: photos are still too large for local storage.");
+          return;
+        }
+      } else {
+        notify("Save failed: unable to persist observation.");
+        return;
+      }
+    }
+
+    setObservations(nextObservations);
     setEditingObs(null);
     notify("Observation Saved");
     setView('observations');
@@ -957,11 +1060,22 @@ const App: React.FC = () => {
                 accept="image/*"
                 capture="environment"
                 multiple
-                onChange={(e) => addImagesToObservation(Array.from(e.target.files || []))}
+                onChange={(e) => { addImagesToObservation(Array.from(e.target.files || [])); e.target.value = ''; }}
                 className="hidden"
               />
             )}
-            {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={(data) => { const newImages = [...editingObs.images]; newImages[isAnnotating.index] = data; setEditingObs({...editingObs, images: newImages}); setIsAnnotating(null); }} onCancel={() => setIsAnnotating(null)} />}
+            {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={async (data) => {
+              try {
+                const optimizedData = await compressDataUrl(data, 1600, 0.72);
+                const newImages = [...editingObs.images];
+                newImages[isAnnotating.index] = optimizedData;
+                setEditingObs({...editingObs, images: newImages});
+              } catch (err) {
+                notify('Failed to optimize annotated photo.');
+              } finally {
+                setIsAnnotating(null);
+              }
+            }} onCancel={() => setIsAnnotating(null)} />}
             <header className={`px-5 pt-8 pb-4 flex items-center justify-between border-b shadow-sm ${appDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
               <div className="flex items-center gap-4">
                 <button onClick={() => setView('observations')} className={`p-2 ${appDarkMode ? 'text-gray-400' : 'text-gray-400'}`}>
@@ -1125,7 +1239,7 @@ const App: React.FC = () => {
                         accept="image/*"
                         capture="environment"
                         multiple
-                        onChange={(e) => addImagesToObservation(Array.from(e.target.files || []))}
+                        onChange={(e) => { addImagesToObservation(Array.from(e.target.files || [])); e.target.value = ''; }}
                         className="hidden"
                       />
                     </label>
@@ -1135,7 +1249,7 @@ const App: React.FC = () => {
                         type="file"
                         accept="image/*"
                         multiple
-                        onChange={(e) => addImagesToObservation(Array.from(e.target.files || []))}
+                        onChange={(e) => { addImagesToObservation(Array.from(e.target.files || [])); e.target.value = ''; }}
                         className="hidden"
                       />
                     </label>
