@@ -146,6 +146,9 @@ const App: React.FC = () => {
         setPlans(savedPlans ? JSON.parse(savedPlans) : []);
         setObservations(savedObs ? JSON.parse(savedObs) : []);
         setView('dashboard');
+      } else if (project?.id === activeProjectId) {
+        // Keep in-memory state for a newly created project until persistence effect runs.
+        setView('dashboard');
       } else {
         setActiveProjectId(null);
         localStorage.removeItem('site_active_project_id');
@@ -533,9 +536,10 @@ const App: React.FC = () => {
 
   const syncToCloud = () => {
     if (!editingObs) return;
-    const exists = observations.find(o => o.id === editingObs.id);
-    if (exists) setObservations(observations.map(o => o.id === editingObs.id ? editingObs : o));
-    else setObservations([editingObs, ...observations]);
+    setObservations(prev => {
+      const exists = prev.some(o => o.id === editingObs.id);
+      return exists ? prev.map(o => o.id === editingObs.id ? editingObs : o) : [editingObs, ...prev];
+    });
     setEditingObs(null);
     notify("Observation Saved");
     setView('observations');
@@ -568,6 +572,10 @@ const App: React.FC = () => {
     const newList = [newMeta, ...projectList];
     setProjectList(newList);
     localStorage.setItem('site_project_list', JSON.stringify(newList));
+    localStorage.setItem(`site_project_${id}_info`, JSON.stringify(newProject));
+    localStorage.setItem(`site_project_${id}_plans`, JSON.stringify([]));
+    localStorage.setItem(`site_project_${id}_obs`, JSON.stringify([]));
+    localStorage.setItem('site_active_project_id', id);
     setActiveProjectId(id);
     setProject(newProject);
     setPlans([]);
