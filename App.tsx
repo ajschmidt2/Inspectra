@@ -732,10 +732,10 @@ const App: React.FC = () => {
 
 
 
-  const ThemeToggle = () => (
+  const ThemeToggle = ({ className = '' }: { className?: string }) => (
     <button
       onClick={() => setAppDarkMode(!appDarkMode)}
-      className={`fixed top-5 right-5 z-[140] p-3 rounded-2xl shadow-lg border transition-all active:scale-95 ${appDarkMode ? 'bg-gray-900 border-gray-800 text-yellow-400' : 'bg-white border-gray-200 text-gray-600'}`}
+      className={`p-3 rounded-2xl shadow-lg border transition-all active:scale-95 ${appDarkMode ? 'bg-gray-900 border-gray-800 text-yellow-400' : 'bg-white border-gray-200 text-gray-600'} ${className}`}
       aria-label="Toggle app theme"
       title="Toggle app theme"
     >
@@ -748,7 +748,6 @@ const App: React.FC = () => {
   if (view === 'projectBrowser') {
     return (
       <div className={`max-w-md mx-auto min-h-screen flex flex-col p-6 animate-in fade-in duration-500 pb-24 ${appDarkMode ? 'bg-gray-950 text-white' : 'bg-gray-50 text-gray-900'}`}>
-        <ThemeToggle />
         <header className="mb-8 flex justify-between items-end">
           <div>
             <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Database</p>
@@ -797,7 +796,6 @@ const App: React.FC = () => {
 
   return (
     <div className={`max-w-md mx-auto min-h-screen flex flex-col relative overflow-x-hidden pb-24 selection:bg-blue-100 ${appDarkMode ? 'bg-gray-950 text-white' : 'bg-gray-50 text-gray-900'}`}>
-      <ThemeToggle />
       {!isOnline && (
         <div className="bg-red-600 text-white text-[10px] font-black uppercase tracking-widest py-2 px-5 flex items-center justify-center gap-2 animate-in slide-in-from-top duration-500 sticky top-0 z-[100]">
           <WifiOff size={14} /> Offline Mode: Work is being saved locally
@@ -1306,6 +1304,16 @@ const App: React.FC = () => {
                   <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Inspection Name</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><LayoutDashboard className="text-blue-500 mr-4 shrink-0" size={20} /><input value={project.name} onChange={e => setProject({...project, name: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-white text-gray-900" /></div></div>
                   <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Project Location</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><MapPinIcon className="text-red-500 mr-4 shrink-0" size={20} /><input value={project.location} onChange={e => setProject({...project, location: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-white text-gray-900" /></div></div>
                   <div className="space-y-2"><label className="text-[10px] font-black uppercase text-gray-400 tracking-widest">Lead Inspector</label><div className="flex items-center bg-white rounded-3xl border border-gray-100 p-4 shadow-sm"><User className="text-purple-500 mr-4 shrink-0" size={20} /><input value={project.inspector} onChange={e => setProject({...project, inspector: e.target.value})} className="flex-1 text-sm font-bold outline-none truncate bg-white text-gray-900" /></div></div>
+               </div>
+               <div className="space-y-3 pt-6 border-t border-gray-100">
+                  <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Appearance</p>
+                  <div className="w-full py-4 px-5 bg-white border border-gray-100 rounded-[28px] shadow-sm flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-black uppercase tracking-widest text-gray-600">Theme</p>
+                      <p className="text-[10px] font-bold text-gray-400 mt-1">Switch between light and dark mode</p>
+                    </div>
+                    <ThemeToggle className="shrink-0" />
+                  </div>
                </div>
                <div className="space-y-3 pt-6 border-t border-gray-100">
                   <p className="text-[10px] font-black text-gray-400 uppercase tracking-widest">Global Resources</p>
