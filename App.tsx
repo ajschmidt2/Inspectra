@@ -35,6 +35,8 @@ const DEFAULT_COMMENTS = [
 ];
 
 const App: React.FC = () => {
+  const editorPhotoInputRef = useRef<HTMLInputElement>(null);
+
   // --- Global Shared Database (Across all projects) ---
   const [sharedComments, setSharedComments] = useState<string[]>(() => {
     const saved = localStorage.getItem('site_shared_comments');
@@ -100,6 +102,11 @@ const App: React.FC = () => {
     }).sort((a, b) => b.timestamp - a.timestamp);
   }, [observations, searchQuery]);
 
+  const isNewEntry = useMemo(() => {
+    if (!editingObs) return false;
+    return !observations.some(obs => obs.id === editingObs.id);
+  }, [editingObs, observations]);
+
   // --- Offline Mode Detection ---
   useEffect(() => {
     const handleOnline = () => {
@@ -138,6 +145,9 @@ const App: React.FC = () => {
         setProject(JSON.parse(savedInfo));
         setPlans(savedPlans ? JSON.parse(savedPlans) : []);
         setObservations(savedObs ? JSON.parse(savedObs) : []);
+        setView('dashboard');
+      } else if (project?.id === activeProjectId) {
+        // Keep in-memory state for a newly created project until persistence effect runs.
         setView('dashboard');
       } else {
         setActiveProjectId(null);
@@ -229,6 +239,19 @@ const App: React.FC = () => {
   const removeFromLibrary = (text: string) => {
     setSharedComments(sharedComments.filter(c => c !== text));
     notify("Removed from Library");
+  };
+
+  const addImagesToObservation = (files: File[]) => {
+    files.forEach(file => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setEditingObs(prev => {
+          if (!prev || prev.images.length >= 5) return prev;
+          return { ...prev, images: [...prev.images, reader.result as string] };
+        });
+      };
+      reader.readAsDataURL(file);
+    });
   };
 
   const useComment = (text: string) => {
@@ -513,9 +536,10 @@ const App: React.FC = () => {
 
   const syncToCloud = () => {
     if (!editingObs) return;
-    const exists = observations.find(o => o.id === editingObs.id);
-    if (exists) setObservations(observations.map(o => o.id === editingObs.id ? editingObs : o));
-    else setObservations([editingObs, ...observations]);
+    setObservations(prev => {
+      const exists = prev.some(o => o.id === editingObs.id);
+      return exists ? prev.map(o => o.id === editingObs.id ? editingObs : o) : [editingObs, ...prev];
+    });
     setEditingObs(null);
     notify("Observation Saved");
     setView('observations');
@@ -548,6 +572,10 @@ const App: React.FC = () => {
     const newList = [newMeta, ...projectList];
     setProjectList(newList);
     localStorage.setItem('site_project_list', JSON.stringify(newList));
+    localStorage.setItem(`site_project_${id}_info`, JSON.stringify(newProject));
+    localStorage.setItem(`site_project_${id}_plans`, JSON.stringify([]));
+    localStorage.setItem(`site_project_${id}_obs`, JSON.stringify([]));
+    localStorage.setItem('site_active_project_id', id);
     setActiveProjectId(id);
     setProject(newProject);
     setPlans([]);
@@ -885,6 +913,17 @@ const App: React.FC = () => {
 
         {view === 'editor' && editingObs && (
           <div className={`fixed inset-0 z-[120] flex flex-col animate-in slide-in-from-bottom duration-500 overflow-hidden ${editorDarkMode ? 'bg-gray-950' : 'bg-gray-50'}`}>
+            {isNewEntry && (
+              <input
+                ref={editorPhotoInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                multiple
+                onChange={(e) => addImagesToObservation(Array.from(e.target.files || []))}
+                className="hidden"
+              />
+            )}
             {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={(data) => { const newImages = [...editingObs.images]; newImages[isAnnotating.index] = data; setEditingObs({...editingObs, images: newImages}); setIsAnnotating(null); }} onCancel={() => setIsAnnotating(null)} />}
             <header className={`px-5 pt-8 pb-4 flex items-center justify-between border-b shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
               <div className="flex items-center gap-4">
@@ -904,6 +943,16 @@ const App: React.FC = () => {
               </div>
             </header>
             <main className="flex-1 overflow-y-auto p-5 space-y-6 pb-32">
+              {isNewEntry && (
+                <button
+                  onClick={() => editorPhotoInputRef.current?.click()}
+                  disabled={editingObs.images.length >= 5}
+                  className={`w-full py-4 px-5 rounded-2xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 shadow-sm transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 ${editorDarkMode ? 'bg-blue-900/40 border border-blue-800 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-700'}`}
+                >
+                  <Camera size={16} />
+                  {editingObs.images.length >= 5 ? 'Photo Limit Reached (5/5)' : 'Quick Capture Photos'}
+                </button>
+              )}
               <section className="space-y-3">
                 <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Pin on Floor Plan</label>
                 {editingObs.planId ? (
@@ -1046,11 +1095,6 @@ const App: React.FC = () => {
                       </div>
                     </div>
                   ))}
-                  {editingObs.images.length < 5 && (
-                    <label className={`flex flex-col items-center justify-center gap-2 aspect-square border-2 border-dashed rounded-[24px] cursor-pointer shadow-sm transition-all active:scale-95 ${editorDarkMode ? 'bg-gray-900 border-gray-700 text-gray-600 hover:border-blue-800' : 'bg-white border-gray-200 text-gray-400 hover:border-blue-300'}`}>
-                      <Camera size={24} /><span className="text-[8px] font-black uppercase tracking-widest">Capture</span><input type="file" accept="image/*" capture="environment" multiple onChange={(e) => { const files = Array.from(e.target.files || []); files.forEach(file => { const reader = new FileReader(); reader.onloadend = () => setEditingObs(prev => prev ? ({ ...prev, images: [...prev.images, reader.result as string] }) : null); reader.readAsDataURL(file); }); }} className="hidden" />
-                    </label>
-                  )}
                 </div>
               </section>
             </main>
