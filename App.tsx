@@ -74,6 +74,7 @@ const App: React.FC = () => {
   const [isRepositioningId, setIsRepositioningId] = useState<string | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const [isProcessingImages, setIsProcessingImages] = useState(false);
   const [isAnnotating, setIsAnnotating] = useState<{index: number, data: string} | null>(null);
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [showToast, setShowToast] = useState<string | null>(null);
@@ -82,8 +83,8 @@ const App: React.FC = () => {
   const [newTemplateInput, setNewTemplateInput] = useState('');
   const [renamingPlanId, setRenamingPlanId] = useState<string | null>(null);
   
-  // New specific UI state for editor
-  const [editorDarkMode, setEditorDarkMode] = useState(() => localStorage.getItem('site_editor_dark_mode') === 'true');
+  // --- Global Theme State ---
+  const [appDarkMode, setAppDarkMode] = useState(() => localStorage.getItem('site_app_dark_mode') === 'true');
 
   // --- Bulk Selection State ---
   const [isBulkSelectMode, setIsBulkSelectMode] = useState(false);
@@ -132,8 +133,8 @@ const App: React.FC = () => {
   }, [sharedComments]);
 
   useEffect(() => {
-    localStorage.setItem('site_editor_dark_mode', editorDarkMode.toString());
-  }, [editorDarkMode]);
+    localStorage.setItem('site_app_dark_mode', appDarkMode.toString());
+  }, [appDarkMode]);
 
   useEffect(() => {
     if (activeProjectId) {
@@ -145,6 +146,9 @@ const App: React.FC = () => {
         setProject(JSON.parse(savedInfo));
         setPlans(savedPlans ? JSON.parse(savedPlans) : []);
         setObservations(savedObs ? JSON.parse(savedObs) : []);
+        setView('dashboard');
+      } else if (project?.id === activeProjectId) {
+        // Keep in-memory state for a newly created project until persistence effect runs.
         setView('dashboard');
       } else {
         setActiveProjectId(null);
@@ -161,22 +165,26 @@ const App: React.FC = () => {
 
   useEffect(() => {
     if (activeProjectId && project) {
-      localStorage.setItem(`site_project_${activeProjectId}_info`, JSON.stringify(project));
-      localStorage.setItem(`site_project_${activeProjectId}_plans`, JSON.stringify(plans));
-      localStorage.setItem(`site_project_${activeProjectId}_obs`, JSON.stringify(observations));
-      localStorage.setItem('site_active_project_id', activeProjectId);
+      try {
+        localStorage.setItem(`site_project_${activeProjectId}_info`, JSON.stringify(project));
+        localStorage.setItem(`site_project_${activeProjectId}_plans`, JSON.stringify(plans));
+        localStorage.setItem(`site_project_${activeProjectId}_obs`, JSON.stringify(observations));
+        localStorage.setItem('site_active_project_id', activeProjectId);
 
-      const updatedList = projectList.map(p => 
-        p.id === activeProjectId 
-          ? { ...p, name: project.name, location: project.location, findingCount: observations.length, lastModified: Date.now() }
-          : p
-      );
-      setProjectList(updatedList);
-      localStorage.setItem('site_project_list', JSON.stringify(updatedList));
-      
-      // Mark as having unsynced changes
-      setHasUnsyncedChanges(true);
-      localStorage.setItem('site_has_unsynced_changes', 'true');
+        const updatedList = projectList.map(p => 
+          p.id === activeProjectId 
+            ? { ...p, name: project.name, location: project.location, findingCount: observations.length, lastModified: Date.now() }
+            : p
+        );
+        setProjectList(updatedList);
+        localStorage.setItem('site_project_list', JSON.stringify(updatedList));
+        
+        // Mark as having unsynced changes
+        setHasUnsyncedChanges(true);
+        localStorage.setItem('site_has_unsynced_changes', 'true');
+      } catch (err) {
+        notify("Save failed: storage is full. Try fewer/smaller photos.");
+      }
     }
   }, [project, plans, observations]);
 
@@ -238,17 +246,103 @@ const App: React.FC = () => {
     notify("Removed from Library");
   };
 
-  const addImagesToObservation = (files: File[]) => {
-    files.forEach(file => {
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setEditingObs(prev => {
-          if (!prev || prev.images.length >= 5) return prev;
-          return { ...prev, images: [...prev.images, reader.result as string] };
-        });
-      };
-      reader.readAsDataURL(file);
-    });
+  const compressDataUrl = (dataUrl: string, maxDimension: number, quality: number) => new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.onerror = () => reject(new Error('Image decode failed'));
+    img.onload = () => {
+      const scale = Math.min(1, maxDimension / Math.max(img.width, img.height));
+      const width = Math.max(1, Math.round(img.width * scale));
+      const height = Math.max(1, Math.round(img.height * scale));
+
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext('2d');
+
+      if (!context) {
+        reject(new Error('Canvas context not available'));
+        return;
+      }
+
+      context.drawImage(img, 0, 0, width, height);
+      resolve(canvas.toDataURL('image/jpeg', quality));
+    };
+    img.src = dataUrl;
+  });
+
+  const optimizeImageFile = (file: File) => new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error);
+    reader.onload = async () => {
+      try {
+        const optimizedData = await compressDataUrl(reader.result as string, 1600, 0.72);
+        resolve(optimizedData);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+
+  const optimizeObservationImages = async (images: string[], maxDimension: number, quality: number) => {
+    const optimized = await Promise.all(images.map((image) => compressDataUrl(image, maxDimension, quality)));
+    return optimized;
+  };
+
+  const persistProjectSnapshot = (nextObservations: Observation[]) => {
+    if (!activeProjectId || !project) return true;
+
+    try {
+      localStorage.setItem(`site_project_${activeProjectId}_info`, JSON.stringify(project));
+      localStorage.setItem(`site_project_${activeProjectId}_plans`, JSON.stringify(plans));
+      localStorage.setItem(`site_project_${activeProjectId}_obs`, JSON.stringify(nextObservations));
+      localStorage.setItem('site_active_project_id', activeProjectId);
+
+      const updatedList = projectList.map(p =>
+        p.id === activeProjectId
+          ? { ...p, name: project.name, location: project.location, findingCount: nextObservations.length, lastModified: Date.now() }
+          : p
+      );
+      setProjectList(updatedList);
+      localStorage.setItem('site_project_list', JSON.stringify(updatedList));
+      setHasUnsyncedChanges(true);
+      localStorage.setItem('site_has_unsynced_changes', 'true');
+      return true;
+    } catch (err) {
+      return false;
+    }
+  };
+
+  const addImagesToObservation = async (files: File[]) => {
+    if (files.length === 0) return;
+
+    setIsProcessingImages(true);
+    try {
+      const settled = await Promise.allSettled(files.map(optimizeImageFile));
+      const imageDataUrls = settled
+        .filter((result): result is PromiseFulfilledResult<string> => result.status === 'fulfilled')
+        .map(result => result.value);
+
+      if (imageDataUrls.length === 0) {
+        notify("Failed to process one or more photos.");
+        return;
+      }
+
+      setEditingObs(prev => {
+        if (!prev) return prev;
+        const remainingSlots = Math.max(0, 5 - prev.images.length);
+        const imagesToAdd = imageDataUrls.slice(0, remainingSlots);
+        return { ...prev, images: [...prev.images, ...imagesToAdd] };
+      });
+
+      if (settled.some(result => result.status === 'rejected')) {
+        notify("Some photos could not be processed and were skipped.");
+      }
+    } catch (err) {
+      notify("Failed to process one or more photos.");
+    } finally {
+      setIsProcessingImages(false);
+    }
   };
 
   const useComment = (text: string) => {
@@ -531,11 +625,46 @@ const App: React.FC = () => {
     setActivePlanId(null);
   };
 
-  const syncToCloud = () => {
+  const syncToCloud = async () => {
     if (!editingObs) return;
-    const exists = observations.find(o => o.id === editingObs.id);
-    if (exists) setObservations(observations.map(o => o.id === editingObs.id ? editingObs : o));
-    else setObservations([editingObs, ...observations]);
+    if (isProcessingImages) {
+      notify("Please wait for photos to finish loading before saving.");
+      return;
+    }
+
+    const saveObservation = (observationToSave: Observation) => {
+      const exists = observations.some(o => o.id === observationToSave.id);
+      return exists
+        ? observations.map(o => o.id === observationToSave.id ? observationToSave : o)
+        : [observationToSave, ...observations];
+    };
+
+    let observationToSave = editingObs;
+    let nextObservations = saveObservation(observationToSave);
+
+    if (!persistProjectSnapshot(nextObservations)) {
+      if (observationToSave.images.length > 0) {
+        notify("Optimizing photos further for saving...");
+        try {
+          const aggressivelyOptimizedImages = await optimizeObservationImages(observationToSave.images, 1200, 0.55);
+          observationToSave = { ...observationToSave, images: aggressivelyOptimizedImages };
+          nextObservations = saveObservation(observationToSave);
+        } catch (err) {
+          notify("Could not optimize photos for saving.");
+          return;
+        }
+
+        if (!persistProjectSnapshot(nextObservations)) {
+          notify("Save failed: photos are still too large for local storage.");
+          return;
+        }
+      } else {
+        notify("Save failed: unable to persist observation.");
+        return;
+      }
+    }
+
+    setObservations(nextObservations);
     setEditingObs(null);
     notify("Observation Saved");
     setView('observations');
@@ -568,6 +697,10 @@ const App: React.FC = () => {
     const newList = [newMeta, ...projectList];
     setProjectList(newList);
     localStorage.setItem('site_project_list', JSON.stringify(newList));
+    localStorage.setItem(`site_project_${id}_info`, JSON.stringify(newProject));
+    localStorage.setItem(`site_project_${id}_plans`, JSON.stringify([]));
+    localStorage.setItem(`site_project_${id}_obs`, JSON.stringify([]));
+    localStorage.setItem('site_active_project_id', id);
     setActiveProjectId(id);
     setProject(newProject);
     setPlans([]);
@@ -576,7 +709,7 @@ const App: React.FC = () => {
   };
 
   const NavItem = ({ icon: Icon, label, active, onClick }: any) => (
-    <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all duration-300 relative ${active ? 'text-blue-600 scale-105' : 'text-gray-400 hover:text-gray-600'}`}>
+    <button onClick={onClick} className={`flex flex-col items-center gap-1 transition-all duration-300 relative ${active ? 'text-blue-600 scale-105' : appDarkMode ? 'text-gray-500 hover:text-gray-300' : 'text-gray-400 hover:text-gray-600'}`}>
       <Icon size={22} strokeWidth={active ? 2.5 : 2} />
       <span className="text-[10px] font-bold uppercase tracking-wider">{label}</span>
       {active && <div className="absolute -bottom-2 w-1 h-1 bg-blue-600 rounded-full" />}
@@ -584,24 +717,38 @@ const App: React.FC = () => {
   );
 
   const Header = ({ title, showBack, rightAction, onBack }: any) => (
-    <header className="px-5 pt-8 pb-4 flex items-center justify-between sticky top-0 bg-gray-50/80 backdrop-blur-md z-30">
+    <header className={`px-5 pt-8 pb-4 flex items-center justify-between sticky top-0 backdrop-blur-md z-30 ${appDarkMode ? 'bg-gray-950/90 border-b border-gray-800 text-white' : 'bg-gray-50/80 text-gray-900'}`}>
       <div className="flex items-center gap-4 min-w-0">
         {showBack && (
-          <button onClick={onBack || (() => setView('dashboard'))} className="p-2 bg-white rounded-2xl shadow-sm border border-gray-100 active:scale-95 transition">
+          <button onClick={onBack || (() => setView('dashboard'))} className={`p-2 rounded-2xl shadow-sm border active:scale-95 transition ${appDarkMode ? 'bg-gray-900 border-gray-800 text-gray-200' : 'bg-white border-gray-100 text-gray-900'}`}>
             <ArrowLeft size={20} />
           </button>
         )}
-        <h1 className="text-2xl font-black tracking-tight text-gray-900 truncate">{title}</h1>
+        <h1 className={`text-2xl font-black tracking-tight truncate ${appDarkMode ? 'text-white' : 'text-gray-900'}`}>{title}</h1>
       </div>
       {rightAction}
     </header>
+  );
+
+
+
+  const ThemeToggle = () => (
+    <button
+      onClick={() => setAppDarkMode(!appDarkMode)}
+      className={`fixed top-5 right-5 z-[140] p-3 rounded-2xl shadow-lg border transition-all active:scale-95 ${appDarkMode ? 'bg-gray-900 border-gray-800 text-yellow-400' : 'bg-white border-gray-200 text-gray-600'}`}
+      aria-label="Toggle app theme"
+      title="Toggle app theme"
+    >
+      {appDarkMode ? <Sun size={18} /> : <Moon size={18} />}
+    </button>
   );
 
   const selectedObservation = selectedPinId ? observations.find(o => o.id === selectedPinId) : null;
 
   if (view === 'projectBrowser') {
     return (
-      <div className="max-w-md mx-auto min-h-screen bg-gray-50 flex flex-col p-6 animate-in fade-in duration-500 pb-24">
+      <div className={`max-w-md mx-auto min-h-screen flex flex-col p-6 animate-in fade-in duration-500 pb-24 ${appDarkMode ? 'bg-gray-950 text-white' : 'bg-gray-50 text-gray-900'}`}>
+        <ThemeToggle />
         <header className="mb-8 flex justify-between items-end">
           <div>
             <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest mb-1">Database</p>
@@ -649,7 +796,8 @@ const App: React.FC = () => {
   if (!project) return null;
 
   return (
-    <div className="max-w-md mx-auto min-h-screen bg-gray-50 flex flex-col relative overflow-x-hidden pb-24 selection:bg-blue-100">
+    <div className={`max-w-md mx-auto min-h-screen flex flex-col relative overflow-x-hidden pb-24 selection:bg-blue-100 ${appDarkMode ? 'bg-gray-950 text-white' : 'bg-gray-50 text-gray-900'}`}>
+      <ThemeToggle />
       {!isOnline && (
         <div className="bg-red-600 text-white text-[10px] font-black uppercase tracking-widest py-2 px-5 flex items-center justify-center gap-2 animate-in slide-in-from-top duration-500 sticky top-0 z-[100]">
           <WifiOff size={14} /> Offline Mode: Work is being saved locally
@@ -904,7 +1052,7 @@ const App: React.FC = () => {
         )}
 
         {view === 'editor' && editingObs && (
-          <div className={`fixed inset-0 z-[120] flex flex-col animate-in slide-in-from-bottom duration-500 overflow-hidden ${editorDarkMode ? 'bg-gray-950' : 'bg-gray-50'}`}>
+          <div className={`fixed inset-0 z-[120] flex flex-col animate-in slide-in-from-bottom duration-500 overflow-hidden ${appDarkMode ? 'bg-gray-950' : 'bg-gray-50'}`}>
             {isNewEntry && (
               <input
                 ref={editorPhotoInputRef}
@@ -912,26 +1060,31 @@ const App: React.FC = () => {
                 accept="image/*"
                 capture="environment"
                 multiple
-                onChange={(e) => addImagesToObservation(Array.from(e.target.files || []))}
+                onChange={(e) => { addImagesToObservation(Array.from(e.target.files || [])); e.target.value = ''; }}
                 className="hidden"
               />
             )}
-            {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={(data) => { const newImages = [...editingObs.images]; newImages[isAnnotating.index] = data; setEditingObs({...editingObs, images: newImages}); setIsAnnotating(null); }} onCancel={() => setIsAnnotating(null)} />}
-            <header className={`px-5 pt-8 pb-4 flex items-center justify-between border-b shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
+            {isAnnotating && <PhotoAnnotation imageSrc={isAnnotating.data} onSave={async (data) => {
+              try {
+                const optimizedData = await compressDataUrl(data, 1600, 0.72);
+                const newImages = [...editingObs.images];
+                newImages[isAnnotating.index] = optimizedData;
+                setEditingObs({...editingObs, images: newImages});
+              } catch (err) {
+                notify('Failed to optimize annotated photo.');
+              } finally {
+                setIsAnnotating(null);
+              }
+            }} onCancel={() => setIsAnnotating(null)} />}
+            <header className={`px-5 pt-8 pb-4 flex items-center justify-between border-b shadow-sm ${appDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
               <div className="flex items-center gap-4">
-                <button onClick={() => setView('observations')} className={`p-2 ${editorDarkMode ? 'text-gray-400' : 'text-gray-400'}`}>
+                <button onClick={() => setView('observations')} className={`p-2 ${appDarkMode ? 'text-gray-400' : 'text-gray-400'}`}>
                   <ArrowLeft size={24} />
                 </button>
                 <h2 className="text-xl font-black tracking-tight">{editingObs.note ? 'Edit Finding' : 'New Finding'}</h2>
               </div>
               <div className="flex items-center gap-3">
-                <button 
-                  onClick={() => setEditorDarkMode(!editorDarkMode)} 
-                  className={`p-2.5 rounded-xl transition-all active:scale-95 ${editorDarkMode ? 'bg-gray-800 text-yellow-400 border border-gray-700' : 'bg-gray-100 text-gray-600 border border-gray-200'}`}
-                >
-                  {editorDarkMode ? <Sun size={20} /> : <Moon size={20} />}
-                </button>
-                <button onClick={syncToCloud} className="px-6 py-2.5 bg-blue-600 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200 active:scale-95 transition">Save</button>
+                <button onClick={syncToCloud} disabled={isProcessingImages} className="px-6 py-2.5 bg-blue-600 disabled:bg-blue-400 text-white rounded-full font-black text-xs uppercase shadow-lg shadow-blue-200 active:scale-95 transition disabled:cursor-not-allowed">{isProcessingImages ? 'Processing Photos...' : 'Save'}</button>
               </div>
             </header>
             <main className="flex-1 overflow-y-auto p-5 space-y-6 pb-32">
@@ -939,21 +1092,21 @@ const App: React.FC = () => {
                 <button
                   onClick={() => editorPhotoInputRef.current?.click()}
                   disabled={editingObs.images.length >= 5}
-                  className={`w-full py-4 px-5 rounded-2xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 shadow-sm transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 ${editorDarkMode ? 'bg-blue-900/40 border border-blue-800 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-700'}`}
+                  className={`w-full py-4 px-5 rounded-2xl text-xs font-black uppercase tracking-widest flex items-center justify-center gap-2 shadow-sm transition active:scale-95 disabled:cursor-not-allowed disabled:opacity-60 ${appDarkMode ? 'bg-blue-900/40 border border-blue-800 text-blue-300' : 'bg-blue-50 border border-blue-200 text-blue-700'}`}
                 >
                   <Camera size={16} />
                   {editingObs.images.length >= 5 ? 'Photo Limit Reached (5/5)' : 'Quick Capture Photos'}
                 </button>
               )}
               <section className="space-y-3">
-                <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Pin on Floor Plan</label>
+                <label className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Pin on Floor Plan</label>
                 {editingObs.planId ? (
-                   <div className={`flex flex-col gap-3 p-4 border rounded-3xl shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
+                   <div className={`flex flex-col gap-3 p-4 border rounded-3xl shadow-sm ${appDarkMode ? 'bg-gray-900 border-gray-800 text-white' : 'bg-white border-gray-100 text-gray-900'}`}>
                       <div className="flex items-center gap-4 min-w-0">
-                        <div className={`p-3 rounded-2xl shrink-0 ${editorDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}><MapPinned size={20} /></div>
+                        <div className={`p-3 rounded-2xl shrink-0 ${appDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}><MapPinned size={20} /></div>
                         <div className="min-w-0 flex-1">
                           <p className="text-xs font-black uppercase truncate">{plans.find(p => p.id === editingObs.planId)?.name}</p>
-                          <p className={`text-[10px] font-bold ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Location pinned on map</p>
+                          <p className={`text-[10px] font-bold ${appDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Location pinned on map</p>
                         </div>
                       </div>
                       <div className="grid grid-cols-2 gap-2 mt-1">
@@ -965,7 +1118,7 @@ const App: React.FC = () => {
                         </button>
                         <button 
                           onClick={() => setEditingObs({...editingObs, planId: null, coords: null})} 
-                          className={`flex items-center justify-center gap-2 py-3 rounded-xl text-[10px] font-black uppercase active:scale-95 transition ${editorDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'}`}
+                          className={`flex items-center justify-center gap-2 py-3 rounded-xl text-[10px] font-black uppercase active:scale-95 transition ${appDarkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-600'}`}
                         >
                           <X size={14} /> Change Plan
                         </button>
@@ -974,16 +1127,16 @@ const App: React.FC = () => {
                 ) : (
                   <div className="space-y-3">
                     {plans.length === 0 ? (
-                      <p className={`text-[10px] font-bold italic p-5 rounded-3xl border-2 border-dashed ${editorDarkMode ? 'text-gray-500 bg-gray-900 border-gray-800' : 'text-gray-400 bg-gray-100 border-gray-200'}`}>No floor plans available. Please upload floor plans in the "Plans" tab from the home dashboard.</p>
+                      <p className={`text-[10px] font-bold italic p-5 rounded-3xl border-2 border-dashed ${appDarkMode ? 'text-gray-500 bg-gray-900 border-gray-800' : 'text-gray-400 bg-gray-100 border-gray-200'}`}>No floor plans available. Please upload floor plans in the "Plans" tab from the home dashboard.</p>
                     ) : (
                       <div className="grid grid-cols-1 gap-2">
-                        <p className={`text-[10px] font-bold mb-1 ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Select a plan to drop a pin:</p>
+                        <p className={`text-[10px] font-bold mb-1 ${appDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Select a plan to drop a pin:</p>
                         <div className="flex gap-2 overflow-x-auto no-scrollbar py-1">
                           {plans.map(p => (
                             <button 
                               key={p.id} 
                               onClick={() => setIsSelectingLocation(p.id)} 
-                              className={`flex shrink-0 items-center gap-3 px-5 py-4 border rounded-full text-[10px] font-black uppercase shadow-sm active:scale-95 transition ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-gray-300 hover:bg-gray-800' : 'bg-gray-100 border-transparent text-gray-900 hover:bg-gray-200'}`}
+                              className={`flex shrink-0 items-center gap-3 px-5 py-4 border rounded-full text-[10px] font-black uppercase shadow-sm active:scale-95 transition ${appDarkMode ? 'bg-gray-900 border-gray-800 text-gray-300 hover:bg-gray-800' : 'bg-gray-100 border-transparent text-gray-900 hover:bg-gray-200'}`}
                             >
                               <Plus size={16} className="text-blue-500" /> {p.name}
                             </button>
@@ -997,25 +1150,25 @@ const App: React.FC = () => {
 
               <section className="space-y-3 relative">
                 <div className="flex justify-between items-end">
-                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Issue Description</label>
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Issue Description</label>
                   <div className="flex gap-2">
                     {editingObs.note && !sharedComments.includes(editingObs.note) && (
-                      <button onClick={() => addToLibrary(editingObs.note)} className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase active:scale-95 transition ${editorDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}><BookmarkPlus size={12} /> Add to Library</button>
+                      <button onClick={() => addToLibrary(editingObs.note)} className={`flex items-center gap-1.5 px-3 py-1 rounded-lg text-[10px] font-black uppercase active:scale-95 transition ${appDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-50 text-blue-600'}`}><BookmarkPlus size={12} /> Add to Library</button>
                     )}
                     <button onClick={() => setShowCommentDropdown(!showCommentDropdown)} className="flex items-center gap-1.5 px-3 py-1 bg-gray-900 text-white rounded-lg text-[10px] font-black uppercase active:scale-95 transition shadow-lg"><Sparkles size={12} className="text-blue-400" /> Templates <ChevronDown size={10} className={`transition-transform duration-300 ${showCommentDropdown ? 'rotate-180' : ''}`} /></button>
                   </div>
                 </div>
 
                 {showCommentDropdown && (
-                  <div className={`absolute top-10 right-0 left-0 z-[130] border rounded-[28px] shadow-2xl max-h-64 overflow-y-auto no-scrollbar animate-in zoom-in duration-200 ${editorDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}>
-                    <div className={`p-4 border-b sticky top-0 backdrop-blur-md flex justify-between items-center ${editorDarkMode ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-100'}`}>
-                      <span className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Global Comment Library</span>
+                  <div className={`absolute top-10 right-0 left-0 z-[130] border rounded-[28px] shadow-2xl max-h-64 overflow-y-auto no-scrollbar animate-in zoom-in duration-200 ${appDarkMode ? 'bg-gray-900 border-gray-700' : 'bg-white border-gray-200'}`}>
+                    <div className={`p-4 border-b sticky top-0 backdrop-blur-md flex justify-between items-center ${appDarkMode ? 'bg-gray-900/95 border-gray-800' : 'bg-white/95 border-gray-100'}`}>
+                      <span className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Global Comment Library</span>
                       <button onClick={() => setShowCommentDropdown(false)}><X size={16} className="text-gray-300" /></button>
                     </div>
-                    {sharedComments.length === 0 ? (<div className={`p-8 text-center text-xs italic ${editorDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Library is empty. Add templates in Settings!</div>) : (
-                      <div className={`divide-y ${editorDarkMode ? 'divide-gray-800' : 'divide-gray-50'}`}>
+                    {sharedComments.length === 0 ? (<div className={`p-8 text-center text-xs italic ${appDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>Library is empty. Add templates in Settings!</div>) : (
+                      <div className={`divide-y ${appDarkMode ? 'divide-gray-800' : 'divide-gray-50'}`}>
                         {sharedComments.map((comment, i) => (
-                          <button key={i} onClick={() => useComment(comment)} className={`w-full text-left p-5 text-sm font-semibold transition ${editorDarkMode ? 'text-gray-300 hover:bg-gray-800 active:bg-gray-700' : 'text-gray-700 hover:bg-blue-50 active:bg-blue-100'}`}>{comment}</button>
+                          <button key={i} onClick={() => useComment(comment)} className={`w-full text-left p-5 text-sm font-semibold transition ${appDarkMode ? 'text-gray-300 hover:bg-gray-800 active:bg-gray-700' : 'text-gray-700 hover:bg-blue-50 active:bg-blue-100'}`}>{comment}</button>
                         ))}
                       </div>
                     )}
@@ -1026,33 +1179,33 @@ const App: React.FC = () => {
                   value={editingObs.note} 
                   onChange={e => setEditingObs({...editingObs, note: e.target.value})} 
                   placeholder="Describe the problem here or choose a template..." 
-                  className={`w-full h-40 p-5 rounded-3xl border-2 outline-none font-semibold text-sm shadow-inner resize-none transition-colors ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:border-blue-700' : 'bg-white border-gray-100 text-gray-900 focus:border-blue-500'}`} 
+                  className={`w-full h-40 p-5 rounded-3xl border-2 outline-none font-semibold text-sm shadow-inner resize-none transition-colors ${appDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:border-blue-700' : 'bg-white border-gray-100 text-gray-900 focus:border-blue-500'}`} 
                 />
               </section>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Trade</label>
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Trade</label>
                   <input 
                     value={editingObs.trade} 
                     onChange={e => setEditingObs({...editingObs, trade: e.target.value})} 
-                    className={`w-full p-4 border rounded-2xl text-xs font-bold outline-none shadow-sm transition-colors ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:ring-2 ring-blue-900/20' : 'bg-white border-gray-100 text-gray-900 focus:ring-2 ring-blue-500/10'}`} 
+                    className={`w-full p-4 border rounded-2xl text-xs font-bold outline-none shadow-sm transition-colors ${appDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:ring-2 ring-blue-900/20' : 'bg-white border-gray-100 text-gray-900 focus:ring-2 ring-blue-500/10'}`} 
                     placeholder="e.g. Drywall, Electrical" 
                   />
                 </div>
                 <div className="space-y-2">
-                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Responsible Party</label>
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Responsible Party</label>
                   <input 
                     value={editingObs.responsibleParty} 
                     onChange={e => setEditingObs({...editingObs, responsibleParty: e.target.value})} 
-                    className={`w-full p-4 border rounded-2xl text-xs font-bold outline-none shadow-sm transition-colors ${editorDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:ring-2 ring-blue-900/20' : 'bg-white border-gray-100 text-gray-900 focus:ring-2 ring-blue-500/10'}`} 
+                    className={`w-full p-4 border rounded-2xl text-xs font-bold outline-none shadow-sm transition-colors ${appDarkMode ? 'bg-gray-900 border-gray-800 text-white focus:ring-2 ring-blue-900/20' : 'bg-white border-gray-100 text-gray-900 focus:ring-2 ring-blue-500/10'}`} 
                     placeholder="e.g. ABC Painting" 
                   />
                 </div>
               </div>
 
               <section className="space-y-3">
-                <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Urgency Level</label>
+                <label className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Urgency Level</label>
                 <div className="grid grid-cols-4 gap-2">
                   {(['Low', 'Medium', 'High', 'Critical'] as Priority[]).map(p => (
                     <button 
@@ -1061,7 +1214,7 @@ const App: React.FC = () => {
                       className={`py-3 rounded-2xl text-[9px] font-black uppercase tracking-tighter border-2 transition-all ${
                         editingObs.priority === p 
                           ? 'bg-blue-600 border-blue-600 text-white shadow-lg' 
-                          : editorDarkMode 
+                          : appDarkMode 
                             ? 'bg-gray-900 border-gray-800 text-gray-500 active:scale-95' 
                             : 'bg-white border-gray-100 text-gray-400 active:scale-95'
                       }`}
@@ -1074,12 +1227,37 @@ const App: React.FC = () => {
 
               <section className="space-y-3">
                 <div className="flex justify-between items-center">
-                  <label className={`text-[10px] font-black uppercase tracking-widest ${editorDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Evidence Photos</label>
+                  <label className={`text-[10px] font-black uppercase tracking-widest ${appDarkMode ? 'text-gray-300' : 'text-gray-600'}`}>Evidence Photos</label>
                   <span className="text-[10px] font-bold text-blue-500">{editingObs.images.length}/5</span>
                 </div>
+                {editingObs.images.length < 5 && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <label className={`flex items-center justify-center gap-2 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest cursor-pointer active:scale-95 transition ${appDarkMode ? 'bg-gray-900 border border-gray-800 text-blue-300' : 'bg-white border border-gray-200 text-blue-700'}`}>
+                      <Camera size={14} /> Take Photo
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="environment"
+                        multiple
+                        onChange={(e) => { addImagesToObservation(Array.from(e.target.files || [])); e.target.value = ''; }}
+                        className="hidden"
+                      />
+                    </label>
+                    <label className={`flex items-center justify-center gap-2 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest cursor-pointer active:scale-95 transition ${appDarkMode ? 'bg-gray-900 border border-gray-800 text-gray-300' : 'bg-white border border-gray-200 text-gray-700'}`}>
+                      <ImageIcon size={14} /> Photo Library
+                      <input
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        onChange={(e) => { addImagesToObservation(Array.from(e.target.files || [])); e.target.value = ''; }}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                )}
                 <div className="grid grid-cols-3 gap-3">
                   {editingObs.images.map((img, i) => (
-                    <div key={i} className={`group relative aspect-square rounded-[24px] overflow-hidden border shadow-sm ${editorDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
+                    <div key={i} className={`group relative aspect-square rounded-[24px] overflow-hidden border shadow-sm ${appDarkMode ? 'bg-gray-900 border-gray-800' : 'bg-gray-50 border-gray-100'}`}>
                       <img src={img} className="w-full h-full object-contain" />
                       <div className="absolute inset-0 bg-black/60 flex items-center justify-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button onClick={() => setIsAnnotating({index: i, data: img})} className="p-2.5 bg-white text-blue-600 rounded-xl active:scale-95 transition"><Edit3 size={16} /></button>
